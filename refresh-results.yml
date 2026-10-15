@@ -1,35 +1,35 @@
 name: Refresh GLA U14 Girls results
 
 on:
-  schedule:
-    - cron: "17 14 * * *" # daily at 14:17 UTC
-  workflow_dispatch:
+schedule:
+- cron: “17 14 * * *” # daily at 14:17 UTC
+workflow_dispatch:
 
 permissions:
-  contents: write
+contents: write
 
 jobs:
-  refresh:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install scraper dependencies
-        run: python -m pip install --upgrade pip pandas requests beautifulsoup4
-      - name: Refresh public results
-        run: python update_results.py
-      - name: Commit updated results when changed
-        run: |
-          if ! git diff --quiet -- results.csv; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add results.csv
-            git commit -m "Automated GLA U14 girls results refresh"
-            git push
-          else
-            echo "No results changes detected."
-          fi
+refresh:
+runs-on: ubuntu-latest
+steps:
+- name: Check out repository
+uses: actions/checkout@v4
+- name: Set up Python
+uses: actions/setup-python@v5
+with:
+python-version: “3.12”
+- name: Install scraper dependencies
+run: python -m pip install –upgrade pip pandas requests beautifulsoup4
+- name: Refresh public results
+run: python update_results.py
+- name: Commit updated results when changed
+run: |
+if ! git diff –quiet – results.csv scrape_quarantine.csv; then
+git config user.name “github-actions[bot]”
+git config user.email “41898282+github-actions[bot]@users.noreply.github.com”
+git add results.csv scrape_quarantine.csv
+git commit -m “Automated GLA U14 girls results refresh”
+git push
+else
+echo “No results changes detected.”
+fi

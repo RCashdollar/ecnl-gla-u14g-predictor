@@ -1,217 +1,344 @@
-import math
+from __future__ import annotations
+
 from pathlib import Path
+from math import exp, factorial
+import re
+import numpy as np
 import pandas as pd
 import streamlit as st
 
-APP_DIR = Path(__file__).parent
-teams_df = pd.read_csv(APP_DIR / "teams.csv")
-if teams_df.empty or "team" not in teams_df.columns:
-    st.error("teams.csv is empty or invalid. Restore the provided teams.csv file in the repository.")
-    st.stop()
-teams = sorted(teams_df["team"].dropna().astype(str).unique().tolist())
-raw = pd.read_csv(APP_DIR / "results.csv", keep_default_na=False)
+APP_DIR = Path(__file__).resolve().parent
+RESULTS_PATH = APP_DIR / "results.csv"
+TEAMS_PATH = APP_DIR / "teams.csv"
 
-st.set_page_config(page_title="GLA U14 Girls Predictor", page_icon="⚽", layout="wide")
-st.title("⚽ ECNL-RL U14 Girls — Great Lakes Alliance")
-st.caption("2026–27 season • Experimental model • Results and predictions remain provisional until the source ledger is fully reconciled.")
+st.set_page_config(
+    page_title="ECNL-RL U14 Girls | GLA Predictor",
+    page_icon="⚽",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
-source_url = "https://leaguetables.soccer/ecnl-rl-girls/u14"
-st.info("Automatic results refresh is configured through the repository's daily GitHub Actions workflow. Imported scores are checked against LeagueTables' public U14 GLA East/West pages; if the source layout changes or a check fails, the last saved results are preserved.")
-st.markdown(f"Results source: [LeagueTables — ECNL RL Girls U14]({source_url})")
+# ---------- Visual system ----------
+st.markdown("""
+<style>
+:root { --accent:#b8f36b; --panel:#171d27; --panel2:#202938; --muted:#aab4c4; }
+.block-container {padding-top:1.1rem;padding-bottom:2.4rem;max-width:1280px;}
+[data-testid="stHeader"] {background:transparent;}
+.hero {padding:1.25rem 1.35rem;border:1px solid rgba(184,243,107,.24);border-radius:20px;
+background:linear-gradient(120deg,#17212b 0%,#202c3b 58%,#18241e 100%);margin-bottom:1rem;}
+.hero-kicker {color:var(--accent);font-size:.76rem;font-weight:800;letter-spacing:.13em;text-transform:uppercase;}
+.hero h1 {font-size:clamp(1.55rem,4vw,2.45rem);line-height:1.15;margin:.35rem 0 .45rem;color:#f5f7fb;}
+.hero p {margin:0;color:#c4cedb;font-size:.98rem;}
+.metric-card {background:var(--panel);border:1px solid #303a49;border-radius:15px;padding:1rem 1.05rem;height:100%;}
+.metric-label {color:var(--muted);font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;}
+.metric-value {font-size:1.8rem;font-weight:800;line-height:1.25;margin-top:.25rem;color:#f5f7fb;}
+.metric-note {font-size:.8rem;color:var(--muted);margin-top:.2rem;}
+.section-title {font-size:1.18rem;font-weight:800;margin:.4rem 0 .7rem;color:#f5f7fb;}
+.small-note {font-size:.84rem;color:var(--muted);}
+.pred-card {background:linear-gradient(145deg,#1a2430,#131a22);border:1px solid #354151;border-radius:18px;padding:1rem;}
+.pred-score {font-size:clamp(2rem,6vw,3.3rem);font-weight:900;letter-spacing:.03em;text-align:center;line-height:1.15;}
+.pred-team {font-size:.94rem;font-weight:750;text-align:center;overflow-wrap:anywhere;}
+.prob-wrap {background:#10151c;border-radius:999px;height:14px;overflow:hidden;display:flex;margin:.45rem 0 .3rem;}
+.prob-home {background:#b8f36b;height:100%;}.prob-draw {background:#8592a6;height:100%;}.prob-away {background:#5ea8ff;height:100%;}
+div[data-testid="stMetric"] {background:var(--panel);border:1px solid #303a49;padding:.8rem 1rem;border-radius:14px;}
+div[data-testid="stMetricLabel"] p {color:var(--muted)!important;}
+.stTabs [data-baseweb="tab-list"] {gap:.3rem;}
+.stTabs [data-baseweb="tab"] {height:auto;padding:.7rem .9rem;border-radius:10px 10px 0 0;}
+.stButton>button {border-radius:10px;font-weight:700;}
+@media (max-width:640px) {
+ .block-container {padding-left:.75rem;padding-right:.75rem;padding-top:.65rem;}
+ .hero {padding:1rem;border-radius:15px;}
+ .metric-card {padding:.8rem;}
+ .metric-value {font-size:1.45rem;}
+ .stTabs [data-baseweb="tab"] {padding:.55rem .58rem;font-size:.85rem;}
+}
+</style>
+""", unsafe_allow_html=True)
 
-with st.sidebar:
-    st.header("Data controls")
-    show_unverified = st.checkbox("Include non-final / unresolved rows in results view", value=False)
-    st.caption("Rows marked Final (including user-confirmed finals) with numeric scores are used in the experimental baseline model.")
-    st.markdown("---")
-    st.markdown("**Scope:** 12 user-confirmed teams")
-    st.markdown("**Current model:** experimental goal-rate baseline, not yet validated")
+# ---------- Load and normalize source data ----------
+def load_teams() -> pd.DataFrame:
+    if not TEAMS_PATH.exists():
+        return pd.DataFrame(columns=["team", "conference"])
+    df = pd.read_csv(TEAMS_PATH).fillna("")
+    if not {"team", "conference"}.issubset(df.columns):
+        return pd.DataFrame(columns=["team", "conference"])
+    df["team"] = df["team"].astype(str).str.strip()
+    df["conference"] = df["conference"].astype(str).str.strip().map(
+        lambda x: "GLA East" if x.casefold().replace("gla ", "") == "east" else
+                  "GLA West" if x.casefold().replace("gla ", "") == "west" else x
+    )
+    return df.drop_duplicates("team").sort_values("team").reset_index(drop=True)
 
-def final_rows(df):
-    mask = df["status"].astype(str).str.lower().str.startswith("final")
-    mask &= pd.to_numeric(df["home_goals"], errors="coerce").notna()
-    mask &= pd.to_numeric(df["away_goals"], errors="coerce").notna()
-    return df.loc[mask].copy()
 
-def calculate_stats(matches):
-    records = []
-    for _, r in matches.iterrows():
-        hg, ag = int(float(r["home_goals"])), int(float(r["away_goals"]))
-        records.append((r["home_team"], hg, ag, True))
-        records.append((r["away_team"], ag, hg, False))
-    if not records:
-        return pd.DataFrame(columns=["team","played","W","D","L","GF","GA","GD","points","home_played","away_played"])
-    df = pd.DataFrame(records, columns=["team","gf","ga","is_home"])
-    out=[]
-    for team, g in df.groupby("team"):
-        w=int((g.gf>g.ga).sum()); d=int((g.gf==g.ga).sum()); l=int((g.gf<g.ga).sum())
-        out.append({
-            "team":team, "played":len(g), "W":w, "D":d, "L":l,
-            "GF":int(g.gf.sum()), "GA":int(g.ga.sum()), "GD":int(g.gf.sum()-g.ga.sum()),
-            "points":3*w+d, "home_played":int(g.is_home.sum()), "away_played":int((~g.is_home).sum())
-        })
-    return pd.DataFrame(out)
+def load_results() -> pd.DataFrame:
+    cols = ["date", "conference", "home_team", "away_team", "home_goals", "away_goals", "status"]
+    if not RESULTS_PATH.exists():
+        return pd.DataFrame(columns=cols)
+    df = pd.read_csv(RESULTS_PATH).fillna("")
+    for c in cols:
+        if c not in df.columns:
+            df[c] = ""
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    for c in ["home_goals", "away_goals"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["conference"] = df["conference"].astype(str).str.strip().map(
+        lambda x: "GLA East" if x.casefold().replace("gla ", "") == "east" else
+                  "GLA West" if x.casefold().replace("gla ", "") == "west" else
+                  "Cross-conference" if x.casefold() in {"cross-conference", "cross conference"} else x
+    )
+    df["status"] = df["status"].astype(str)
+    # Only rows with real scores and final-like status count as completed results.
+    final_mask = df["status"].str.contains(r"final|completed", case=False, regex=True)
+    scored_mask = df["home_goals"].notna() & df["away_goals"].notna()
+    df = df[final_mask & scored_mask].copy()
+    df["home_goals"] = df["home_goals"].astype(int)
+    df["away_goals"] = df["away_goals"].astype(int)
+    # De-duplicate exact fixtures only; do not silently reconcile conflicting scores here.
+    df["fixture_key"] = df.apply(lambda r: (r["date"], frozenset([r["home_team"], r["away_team"]])), axis=1)
+    df = df.drop_duplicates("fixture_key", keep="first").drop(columns="fixture_key")
+    return df.sort_values("date", ascending=False).reset_index(drop=True)
 
-def venue_stats(matches, team):
-    played = matches[(matches.home_team == team) | (matches.away_team == team)].copy()
-    out=[]
-    for venue in ["Home","Away"]:
-        g=played[played.home_team.eq(team)] if venue=="Home" else played[played.away_team.eq(team)]
-        gf = pd.to_numeric(g.home_goals if venue=="Home" else g.away_goals, errors="coerce")
-        ga = pd.to_numeric(g.away_goals if venue=="Home" else g.home_goals, errors="coerce")
-        n=len(g)
-        w=int((gf>ga).sum()); d=int((gf==ga).sum()); l=int((gf<ga).sum())
-        out.append({"Venue":venue,"P":n,"W":w,"D":d,"L":l,
-                    "GF/G":round(float(gf.sum()/n),2) if n else 0,
-                    "GA/G":round(float(ga.sum()/n),2) if n else 0,
-                    "GD/G":round(float((gf-ga).sum()/n),2) if n else 0})
-    return pd.DataFrame(out)
+teams = load_teams()
+results = load_results()
+team_names = teams["team"].tolist()
+conf_map = dict(zip(teams["team"], teams["conference"]))
 
-def poisson_probs(lam):
-    # P(X=k), k=0..9; tail probability is folded into 9 for a practical score matrix.
-    vals=[math.exp(-lam)]
-    for k in range(1,10):
-        vals.append(vals[-1]*lam/k)
-    vals[-1] += max(0.0, 1.0-sum(vals))
-    return vals
+# ---------- Standings and team summaries ----------
+def empty_record(team: str) -> dict:
+    return {"Team": team, "P": 0, "W": 0, "D": 0, "L": 0, "GF": 0, "GA": 0, "GD": 0, "Pts": 0}
 
-def prediction(matches, home, away, home_adv):
-    # Shrunk scoring baseline: league average plus team scoring/conceding tendencies.
-    # This is intentionally conservative and marked experimental until sufficient validated data exists.
-    if matches.empty:
-        return None
-    league_home = pd.to_numeric(matches.home_goals, errors="coerce").mean()
-    league_away = pd.to_numeric(matches.away_goals, errors="coerce").mean()
-    if pd.isna(league_home) or pd.isna(league_away):
-        return None
-    def team_rates(team):
-        h=matches[matches.home_team.eq(team)]
-        a=matches[matches.away_team.eq(team)]
-        scored = pd.concat([
-            pd.to_numeric(h.home_goals, errors="coerce"),
-            pd.to_numeric(a.away_goals, errors="coerce")
-        ]).dropna()
-        conceded = pd.concat([
-            pd.to_numeric(h.away_goals, errors="coerce"),
-            pd.to_numeric(a.home_goals, errors="coerce")
-        ]).dropna()
-        # Prior of 3 matches at league scoring rate reduces wild small-sample swings.
-        n=len(scored); prior=3
-        attack=(scored.sum()+prior*((league_home+league_away)/2))/(n+prior) if n+prior else (league_home+league_away)/2
-        ncon=len(conceded)
-        defense=(conceded.sum()+prior*((league_home+league_away)/2))/(ncon+prior) if ncon+prior else (league_home+league_away)/2
-        return attack, defense
-    ha, hd = team_rates(home); aa, ad = team_rates(away)
-    base=(league_home+league_away)/2
-    # Multiplicative blend of attack and opponent concession, with conservative home bump.
-    exp_home=max(0.15, ((ha/base) * (ad/base) * league_home) ** 0.5 + home_adv)
-    exp_away=max(0.15, ((aa/base) * (hd/base) * league_away) ** 0.5)
-    hp, ap=poisson_probs(exp_home), poisson_probs(exp_away)
-    p_home=p_draw=p_away=0.0
-    for i, pi in enumerate(hp):
-        for j, pj in enumerate(ap):
-            p=pi*pj
-            if i>j: p_home+=p
-            elif i==j: p_draw+=p
-            else: p_away+=p
-    best=max(((hp[i]*ap[j],i,j) for i in range(9) for j in range(9)), key=lambda x:x[0])
-    return {"home_xg":exp_home,"away_xg":exp_away,"p_home":p_home,"p_draw":p_draw,"p_away":p_away,"score":(best[1],best[2])}
 
-valid = final_rows(raw)
-display_rows = raw if show_unverified else valid
-tab1, tab2, tab3, tab4 = st.tabs(["Match Predictor", "Standings", "Team Analytics", "Results & Data QA"])
+def standings(matches: pd.DataFrame, conference_only: bool = False) -> pd.DataFrame:
+    rows = {t: empty_record(t) for t in team_names}
+    for _, m in matches.iterrows():
+        h, a = m["home_team"], m["away_team"]
+        if h not in rows or a not in rows:
+            continue
+        if conference_only and (conf_map.get(h) != conf_map.get(a) or conf_map.get(h) not in {"GLA East", "GLA West"}):
+            continue
+        hg, ag = int(m["home_goals"]), int(m["away_goals"])
+        for t, gf, ga in [(h, hg, ag), (a, ag, hg)]:
+            rows[t]["P"] += 1; rows[t]["GF"] += gf; rows[t]["GA"] += ga
+        if hg > ag:
+            rows[h]["W"] += 1; rows[h]["Pts"] += 3; rows[h]["L"] += 0
+            rows[a]["L"] += 1
+        elif hg < ag:
+            rows[a]["W"] += 1; rows[a]["Pts"] += 3; rows[h]["L"] += 1
+        else:
+            rows[h]["D"] += 1; rows[a]["D"] += 1; rows[h]["Pts"] += 1; rows[a]["Pts"] += 1
+    out = pd.DataFrame(rows.values())
+    out["GD"] = out["GF"] - out["GA"]
+    out["Conference"] = out["Team"].map(conf_map)
+    return out.sort_values(["Pts", "GD", "GF", "W", "Team"], ascending=[False, False, False, False, True]).reset_index(drop=True)
 
-with tab1:
-    st.subheader("Match Predictor")
-    c1,c2,c3=st.columns([2,2,1])
-    with c1:
-        home=st.selectbox("Home team", teams, index=teams.index("Elite FC ECNL RL G2012/13") if "Elite FC ECNL RL G2012/13" in teams else 0)
-    with c2:
-        away_options=[t for t in teams if t != home]
-        default_away=away_options.index("Steel City FC ECNL RL G2012/13") if "Steel City FC ECNL RL G2012/13" in away_options else 0
-        away=st.selectbox("Away team", away_options, index=default_away)
-    with c3:
-        home_adv=st.slider("Home bump (goals)", 0.0, 0.6, 0.25, 0.05)
-    st.caption(f"Model input: {len(valid)} rows currently marked Final with numeric scores. These still require source reconciliation before production use.")
-    result=prediction(valid,home,away,home_adv)
-    if result:
-        a,b,c=st.columns(3)
-        a.metric("Predicted score", f'{result["score"][0]} – {result["score"][1]}')
-        b.metric("Expected goals", f'{result["home_xg"]:.2f} – {result["away_xg"]:.2f}')
-        c.metric("Model status", "Experimental")
-        p1,p2,p3=st.columns(3)
-        p1.metric(f"{home} win", f'{result["p_home"]*100:.1f}%')
-        p2.metric("Draw", f'{result["p_draw"]*100:.1f}%')
-        p3.metric(f"{away} win", f'{result["p_away"]*100:.1f}%')
-        st.warning("Prototype estimate only. Sparse, partly unreconciled results can materially distort these probabilities; do not treat them as betting-grade or validated forecasts.")
-    else:
-        st.info("Add at least one final match with a numeric score to enable the experimental prediction.")
 
-with tab2:
-    st.subheader("Provisional Conference Standings")
-    if not valid.empty:
-        overall_stats=calculate_stats(valid)
-        overall_stats=overall_stats[["team","played","W","D","L"]].rename(columns={
-            "played":"Overall P","W":"Overall W","D":"Overall D","L":"Overall L"})
-        for conf_name in ["GLA East", "GLA West"]:
-            conf_matches = valid[valid["conference"].eq(conf_name)]
-            standings=calculate_stats(conf_matches)
-            standings=standings[standings.team.isin(teams)]
-            if not standings.empty:
-                standings=standings.merge(overall_stats,on="team",how="left")
-                standings=standings.sort_values(["points","GD","GF","team"], ascending=[False,False,False,True])
-            st.markdown(f"**{conf_name}**")
-            if standings.empty:
-                st.info("No intra-conference results currently loaded.")
+def team_matches(team: str, source: pd.DataFrame | None = None) -> pd.DataFrame:
+    source = results if source is None else source
+    if source.empty:
+        return source.copy()
+    return source[(source["home_team"] == team) | (source["away_team"] == team)].sort_values("date")
+
+
+def team_form(team: str, limit: int = 5) -> list[str]:
+    games = team_matches(team).tail(limit)
+    form = []
+    for _, m in games.iterrows():
+        is_home = m["home_team"] == team
+        gf = int(m["home_goals"] if is_home else m["away_goals"])
+        ga = int(m["away_goals"] if is_home else m["home_goals"])
+        form.append("W" if gf > ga else "L" if gf < ga else "D")
+    return form
+
+# ---------- Lightweight, explainable Poisson model ----------
+def poisson_pmf(k: int, lam: float) -> float:
+    return exp(-lam) * (lam ** k) / factorial(k)
+
+
+def prediction(home: str, away: str) -> dict:
+    # League scoring baseline and per-team attack/defence estimates are shrunk
+    # toward the cohort average to reduce overreaction to small samples.
+    if results.empty:
+        return {"home_xg": 1.25, "away_xg": 1.05, "home_win": 0.39, "draw": 0.29, "away_win": 0.32,
+                "home_scores": [], "away_scores": [], "games_home": 0, "games_away": 0}
+    all_goals = float(results["home_goals"].sum() + results["away_goals"].sum())
+    avg_per_team_game = max(0.25, all_goals / max(1, 2 * len(results)))
+    prior_games = 3.0
+
+    def rates(team: str) -> tuple[float, float, int]:
+        played = team_matches(team)
+        n = len(played)
+        gf = ga = 0.0
+        for _, m in played.iterrows():
+            if m["home_team"] == team:
+                gf += float(m["home_goals"]); ga += float(m["away_goals"])
             else:
-                standings=standings.rename(columns={"played":"Conf P","W":"Conf W","D":"Conf D","L":"Conf L",
-                    "GF":"Conf GF","GA":"Conf GA","GD":"Conf GD","points":"Conf Pts"})
-                st.dataframe(standings[["team","Overall P","Overall W","Overall L","Overall D","Conf P","Conf W","Conf L","Conf D","Conf GF","Conf GA","Conf GD","Conf Pts"]], use_container_width=True, hide_index=True)
-        st.caption("Overall record includes all recorded league matches, including cross-conference games. Conference record counts only intra-conference games. W-L-T order is used throughout. Incomplete source histories mean these are provisional, not official standings.")
-    else:
-        st.info("No scored final results loaded yet.")
+                gf += float(m["away_goals"]); ga += float(m["home_goals"])
+        attack = (gf + prior_games * avg_per_team_game) / (n + prior_games)
+        concede = (ga + prior_games * avg_per_team_game) / (n + prior_games)
+        return attack, concede, n
 
-with tab3:
-    st.subheader("Team Analytics")
-    team=st.selectbox("Choose team", teams, key="analytics_team")
-    stats=calculate_stats(valid)
-    one=stats[stats.team.eq(team)]
-    team_conf = teams_df.loc[teams_df["team"].eq(team), "conference"]
-    team_conf = team_conf.iloc[0] if len(team_conf) else ""
-    conf_matches = valid[valid["conference"].eq(team_conf)] if team_conf else valid.iloc[0:0]
-    conf_stats=calculate_stats(conf_matches)
-    conf_one=conf_stats[conf_stats.team.eq(team)]
-    if not one.empty:
-        r=one.iloc[0]
-        cr=conf_one.iloc[0] if not conf_one.empty else None
-        cols=st.columns(6)
-        values=[("Overall record (W-L-T)",f'{r.W}-{r.L}-{r.D}'),
-                ("Conference record (W-L-T)",f'{int(cr.W)}-{int(cr.L)}-{int(cr.D)}' if cr is not None else "0-0-0"),
-                ("Overall played",r.played),("Overall goals",f'{r.GF}:{r.GA}'),
-                ("Overall goal difference",f'{r.GD:+}'),("Overall points",r.points)]
-        for col,(label,val) in zip(cols,values):
-            col.metric(label,str(val))
-    st.caption(f"Conference: {team_conf or 'not assigned'}. Overall includes cross-conference games; conference record includes only intra-conference games.")
-    st.markdown("**Home vs away split (overall)**")
-    st.dataframe(venue_stats(valid,team), use_container_width=True, hide_index=True)
-    recent=valid[(valid.home_team.eq(team)) | (valid.away_team.eq(team))].sort_values("date",ascending=False).head(10)
-    if not recent.empty:
-        st.markdown("**Most recent imported results**")
-        st.dataframe(recent[["date","home_team","home_goals","away_goals","away_team","source_url"]], use_container_width=True, hide_index=True)
-    else:
-        st.info("No validated results currently associated with this team.")
+    h_att, h_def, h_n = rates(home)
+    a_att, a_def, a_n = rates(away)
+    # Modest home advantage; cap rates for stability with youth-soccer small samples.
+    home_xg = float(np.clip(0.58 * h_att + 0.42 * a_def + 0.18, 0.2, 4.2))
+    away_xg = float(np.clip(0.58 * a_att + 0.42 * h_def, 0.2, 4.0))
+    max_goals = 8
+    matrix = np.array([[poisson_pmf(i, home_xg) * poisson_pmf(j, away_xg) for j in range(max_goals + 1)] for i in range(max_goals + 1)])
+    # Normalize after truncation to make outcome probabilities sum to 100%.
+    matrix = matrix / matrix.sum()
+    home_win = float(np.tril(matrix, -1).sum())  # row score > column score
+    draw = float(np.trace(matrix))
+    away_win = float(np.triu(matrix, 1).sum())
+    return {"home_xg": home_xg, "away_xg": away_xg, "home_win": home_win, "draw": draw, "away_win": away_win,
+            "home_scores": h_att, "away_scores": a_att, "games_home": h_n, "games_away": a_n}
 
-with tab4:
-    st.subheader("Results & Data QA")
-    st.markdown("Use this view to inspect what the app has imported. Unresolved rows are excluded from the model by default.")
-    st.metric("Rows in current ledger", len(raw))
-    st.metric("Final scored rows used by baseline", len(valid))
-    view=display_rows.copy()
-    if not view.empty:
-        cols=[c for c in ["date","conference","home_team","home_goals","away_goals","away_team","status","validation_note","source_url"] if c in view.columns]
-        st.dataframe(view[cols], use_container_width=True, hide_index=True)
-    st.markdown("**Reconciliation status:** conference labels are normalized and cross-conference games are excluded from standings. Continue checking reciprocal result histories and fixture updates before fitting a production model.")
-    st.download_button("Download current results CSV", raw.to_csv(index=False).encode("utf-8"), "gla_u14g_results.csv", "text/csv")
+# ---------- Header ----------
+st.markdown("""
+<div class="hero">
+  <div class="hero-kicker">2026–27 Season · Great Lakes Alliance</div>
+  <h1>⚽ ECNL-RL U14 Girls Predictor</h1>
+  <p>Match forecasts, conference standings, and team performance — in one place.</p>
+</div>
+""", unsafe_allow_html=True)
+
+completed = len(results)
+latest_date = results["date"].max().strftime("%b %d, %Y") if completed and pd.notna(results["date"].max()) else "No results yet"
+east_count = int((teams["conference"] == "GLA East").sum()) if not teams.empty else 0
+west_count = int((teams["conference"] == "GLA West").sum()) if not teams.empty else 0
+m1, m2, m3 = st.columns(3)
+with m1: st.metric("Teams tracked", len(team_names))
+with m2: st.metric("Completed matches", completed)
+with m3: st.metric("Latest result date", latest_date)
+st.caption(f"Coverage: {east_count} GLA East teams · {west_count} GLA West teams. Predictions are estimates based on the current results sample, not guarantees.")
+
+if not team_names:
+    st.error("Couldn't load teams.csv. Make sure teams.csv is in the same GitHub folder as app.py.")
+    st.stop()
+
+predict_tab, standings_tab, analytics_tab, results_tab = st.tabs(["⚽ Match Predictor", "🏆 Standings", "📈 Team Analytics", "🗓️ Results & Data"])
+
+# ---------- Match Predictor ----------
+with predict_tab:
+    st.markdown('<div class="section-title">Matchup builder</div>', unsafe_allow_html=True)
+    default_home = team_names.index("Elite FC ECNL RL G2012/13") if "Elite FC ECNL RL G2012/13" in team_names else 0
+    default_away = team_names.index("T3FC ECNL RL G2012/13") if "T3FC ECNL RL G2012/13" in team_names else min(1, len(team_names)-1)
+    left, mid, right = st.columns([5, 1, 5])
+    with left: home = st.selectbox("Home team", team_names, index=default_home, key="pred_home")
+    with mid: st.markdown("<div style='text-align:center;padding-top:2rem;font-weight:900;color:#b8f36b;font-size:1.1rem'>VS</div>", unsafe_allow_html=True)
+    with right: away = st.selectbox("Away team", team_names, index=default_away, key="pred_away")
+    if home == away:
+        st.warning("Choose two different teams to create a matchup.")
+    else:
+        p = prediction(home, away)
+        total_games = p["games_home"] + p["games_away"]
+        if total_games < 4: confidence = "Very limited data"
+        elif total_games < 10: confidence = "Early estimate"
+        else: confidence = "More data available"
+        st.markdown('<div class="section-title">Forecast</div>', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns([4, 3, 4])
+        with c1:
+            st.markdown(f'<div class="pred-card"><div class="pred-team">{home}</div><div class="pred-score">{p["home_xg"]:.1f}</div><div style="text-align:center;color:#aab4c4">Expected goals</div></div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'<div class="pred-card"><div class="pred-team">Projected score</div><div class="pred-score">{round(p["home_xg"])}–{round(p["away_xg"])}</div><div style="text-align:center;color:#aab4c4">Model estimate</div></div>', unsafe_allow_html=True)
+        with c3:
+            st.markdown(f'<div class="pred-card"><div class="pred-team">{away}</div><div class="pred-score">{p["away_xg"]:.1f}</div><div style="text-align:center;color:#aab4c4">Expected goals</div></div>', unsafe_allow_html=True)
+        st.markdown("#### Result probabilities")
+        probs = [("Home win", p["home_win"], "#b8f36b"), ("Draw", p["draw"], "#8592a6"), ("Away win", p["away_win"], "#5ea8ff")]
+        cols = st.columns(3)
+        for col, (label, val, color) in zip(cols, probs):
+            with col: st.metric(label, f"{val:.0%}")
+        st.markdown(f'''<div class="prob-wrap"><div class="prob-home" style="width:{p['home_win']*100:.3f}%"></div><div class="prob-draw" style="width:{p['draw']*100:.3f}%"></div><div class="prob-away" style="width:{p['away_win']*100:.3f}%"></div></div>''', unsafe_allow_html=True)
+        st.caption("Home win · Draw · Away win, left to right")
+        st.info(f"**How to read this:** The model blends each team's goals scored and conceded with the league-wide scoring average, shrinks small samples toward that average, and applies a modest home advantage. Current sample: {p['games_home']} matches for the home team and {p['games_away']} for the away team. **Data confidence: {confidence}.** Probabilities are model estimates, not betting odds or guarantees.")
+        recent1, recent2 = st.columns(2)
+        with recent1:
+            st.markdown(f"**{home} · recent form**")
+            form = team_form(home)
+            st.write("  ".join(form) if form else "No completed matches yet")
+        with recent2:
+            st.markdown(f"**{away} · recent form**")
+            form = team_form(away)
+            st.write("  ".join(form) if form else "No completed matches yet")
+        st.caption("Form is shown oldest to newest among the latest five completed matches. The model currently uses all available completed results; it does not yet apply recency weighting or head-to-head weighting.")
+
+# ---------- Standings ----------
+with standings_tab:
+    st.markdown('<div class="section-title">League tables</div>', unsafe_allow_html=True)
+    view = st.radio("Standings view", ["GLA West", "GLA East", "Overall"], horizontal=True, key="standings_view")
+    conf_only = view != "Overall"
+    table = standings(results, conference_only=conf_only)
+    if view != "Overall": table = table[table["Conference"] == view].copy()
+    display = table.copy()
+    display.insert(0, "Rank", range(1, len(display) + 1))
+    display = display.rename(columns={"Team":"Team", "P":"P", "W":"W", "D":"D", "L":"L", "GF":"GF", "GA":"GA", "GD":"GD", "Pts":"Pts"})
+    display = display[["Rank", "Team", "P", "W", "D", "L", "GF", "GA", "GD", "Pts"]]
+    st.dataframe(display, use_container_width=True, hide_index=True, column_config={"Rank":st.column_config.NumberColumn("#", width="small"), "Team":st.column_config.TextColumn("Team", width="large"), "Pts":st.column_config.NumberColumn("Pts", help="3 points for a win, 1 for a draw")})
+    st.caption("Conference tables include only matches between teams assigned to the same GLA conference. Cross-conference games count in overall standings only.")
+
+# ---------- Team analytics ----------
+with analytics_tab:
+    st.markdown('<div class="section-title">Team profile</div>', unsafe_allow_html=True)
+    selected = st.selectbox("Choose a team", team_names, key="analytics_team")
+    games = team_matches(selected)
+    overall = standings(results, conference_only=False).set_index("Team").loc[selected]
+    conf = standings(results, conference_only=True).set_index("Team").loc[selected]
+    k1, k2, k3, k4 = st.columns(4)
+    with k1: st.metric("Overall points", int(overall["Pts"]))
+    with k2: st.metric("Goal difference", f"{int(overall['GD']):+d}")
+    with k3: st.metric("Goals scored", int(overall["GF"]))
+    with k4: st.metric("Goals conceded", int(overall["GA"]))
+    st.markdown("#### Performance split")
+    split = pd.DataFrame([
+        {"Competition":"Overall", "Played":int(overall["P"]), "W":int(overall["W"]), "D":int(overall["D"]), "L":int(overall["L"]), "GF":int(overall["GF"]), "GA":int(overall["GA"]), "Pts":int(overall["Pts"])},
+        {"Competition":"Conference", "Played":int(conf["P"]), "W":int(conf["W"]), "D":int(conf["D"]), "L":int(conf["L"]), "GF":int(conf["GF"]), "GA":int(conf["GA"]), "Pts":int(conf["Pts"])},
+    ])
+    st.dataframe(split, use_container_width=True, hide_index=True)
+    if not games.empty:
+        chart_rows = []
+        for _, m in games.iterrows():
+            is_home = m["home_team"] == selected
+            chart_rows.append({"Date":m["date"], "Goals for":int(m["home_goals"] if is_home else m["away_goals"]), "Goals against":int(m["away_goals"] if is_home else m["home_goals"])})
+        chart = pd.DataFrame(chart_rows).sort_values("Date").set_index("Date")
+        st.markdown("#### Goals by match")
+        st.bar_chart(chart, use_container_width=True)
+        st.markdown("#### Recent results")
+        out = games.copy()
+        out["Date"] = out["date"].dt.strftime("%b %d, %Y")
+        out["Score"] = out.apply(lambda r: f"{int(r['home_goals'])}–{int(r['away_goals'])}", axis=1)
+        out["Venue"] = out.apply(lambda r: "Home" if r["home_team"] == selected else "Away", axis=1)
+        out["Opponent"] = out.apply(lambda r: r["away_team"] if r["home_team"] == selected else r["home_team"], axis=1)
+        st.dataframe(out[["Date", "Venue", "Opponent", "Score", "conference"]].rename(columns={"conference":"Match type"}), use_container_width=True, hide_index=True)
+    else:
+        st.info("No completed matches for this team are in the current results ledger.")
+
+# ---------- Results & data ----------
+with results_tab:
+    st.markdown('<div class="section-title">Completed results</div>', unsafe_allow_html=True)
+    f1, f2 = st.columns(2)
+    with f1: team_filter = st.selectbox("Filter by team", ["All teams"] + team_names, key="results_team_filter")
+    with f2: conf_filter = st.selectbox("Filter by match type", ["All", "GLA East", "GLA West", "Cross-conference"], key="results_conf_filter")
+    shown = results.copy()
+    if team_filter != "All teams": shown = shown[(shown["home_team"] == team_filter) | (shown["away_team"] == team_filter)]
+    if conf_filter != "All": shown = shown[shown["conference"] == conf_filter]
+    if not shown.empty:
+        shown["Date"] = shown["date"].dt.strftime("%b %d, %Y")
+        shown["Score"] = shown.apply(lambda r: f"{int(r['home_goals'])}–{int(r['away_goals'])}", axis=1)
+        shown["Match"] = shown["home_team"] + "  vs  " + shown["away_team"]
+        st.dataframe(shown[["Date", "conference", "Match", "Score"]].rename(columns={"conference":"Match type"}), use_container_width=True, hide_index=True)
+    else:
+        st.info("No completed results match those filters.")
+    st.markdown("#### Data notes")
+    st.write(f"- **{len(results)} unique completed fixtures** loaded from `results.csv`.")
+    st.write(f"- Conference standings use only games where both teams belong to the same conference.")
+    st.write(f"- Overall standings include cross-conference matches.")
+    st.write(f"- Results are loaded from the repository at app startup; upcoming fixtures are not treated as completed unless scores and a final status are present.")
+    if not results.empty and "validation_note" in results.columns:
+        with st.expander("Show result validation notes"):
+            notes = results.copy()
+            notes["Date"] = notes["date"].dt.strftime("%b %d, %Y")
+            notes["Match"] = notes["home_team"] + " vs " + notes["away_team"]
+            notes["Score"] = notes.apply(lambda r: f"{int(r['home_goals'])}–{int(r['away_goals'])}", axis=1)
+            st.dataframe(notes[["Date", "Match", "Score", "validation_note"]], use_container_width=True, hide_index=True)
 
 st.markdown("---")
-st.caption("Results are stored in this repository and refreshed by a scheduled workflow. LeagueTables reports computed standings; check the league or club for official rulings and score corrections.")
+st.caption("ECNL-RL U14 Girls · Great Lakes Alliance · 2026–27 | Forecasts are estimates and become more reliable as verified match data grows.")

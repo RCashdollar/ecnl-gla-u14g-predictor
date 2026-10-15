@@ -192,6 +192,122 @@ def prediction(home: str, away: str) -> dict:
     return {"home_xg": home_xg, "away_xg": away_xg, "home_win": home_win, "draw": draw, "away_win": away_win,
             "home_scores": h_att, "away_scores": a_att, "games_home": h_n, "games_away": a_n}
 
+# ---------- Matchup scouting report popup ----------
+def team_profile_stats(team: str) -> dict:
+    games = team_matches(team)
+    if games.empty:
+        return {"played": 0, "gf_pg": 0.0, "ga_pg": 0.0, "form": "No results", "home_record": "No home results", "away_record": "No away results"}
+
+    gf = ga = wins = draws = losses = 0
+    form = []
+    for _, match in games.sort_values("date").iterrows():
+        is_home = match["home_team"] == team
+        scored = int(match["home_goals"] if is_home else match["away_goals"])
+        conceded = int(match["away_goals"] if is_home else match["home_goals"])
+        gf += scored
+        ga += conceded
+        result = "W" if scored > conceded else "D" if scored == conceded else "L"
+        form.append(result)
+        if result == "W": wins += 1
+        elif result == "D": draws += 1
+        else: losses += 1
+
+    def split_record(is_home_value: bool) -> str:
+        subset = games[games["home_team"] == team] if is_home_value else games[games["away_team"] == team]
+        w = d = l = 0
+        for _, match in subset.iterrows():
+            scored = int(match["home_goals"] if is_home_value else match["away_goals"])
+            conceded = int(match["away_goals"] if is_home_value else match["home_goals"])
+            if scored > conceded: w += 1
+            elif scored == conceded: d += 1
+            else: l += 1
+        return f"{w}-{d}-{l}" if len(subset) else "No games"
+
+    return {
+        "played": len(games), "gf_pg": gf / len(games), "ga_pg": ga / len(games),
+        "form": "–".join(form[-5:]) if form else "No results",
+        "home_record": split_record(True), "away_record": split_record(False),
+        "wins": wins, "draws": draws, "losses": losses,
+    }
+
+
+@st.dialog("Matchup scouting report", width="large")
+def show_matchup_report(home: str, away: str, forecast: dict) -> None:
+    home_stats = team_profile_stats(home)
+    away_stats = team_profile_stats(away)
+    home_conf = conf_map.get(home, "Unknown conference")
+    away_conf = conf_map.get(away, "Unknown conference")
+    total_xg = forecast["home_xg"] + forecast["away_xg"]
+    margin = forecast["home_xg"] - forecast["away_xg"]
+
+    st.markdown("### 📍 Venue & context")
+    st.write(f"**Listed home team:** {home}")
+    st.write(f"**Matchup:** {home_conf} · {away_conf}")
+    st.caption("The results ledger identifies home and away teams, but does not contain field addresses or venue names. The forecast treats the listed home team as the host and applies a modest home advantage; it cannot verify the actual field or travel conditions.")
+
+    st.markdown("### ⚖️ How the teams compare")
+    a, b = st.columns(2)
+    with a:
+        st.markdown(f"**{home}**")
+        st.metric("Expected goals", f"{forecast['home_xg']:.1f}")
+        st.write(f"Goals scored / match: **{home_stats['gf_pg']:.1f}**")
+        st.write(f"Goals conceded / match: **{home_stats['ga_pg']:.1f}**")
+        st.write(f"Last five form: **{home_stats['form']}**")
+        st.write(f"Home record: **{home_stats['home_record']}**")
+    with b:
+        st.markdown(f"**{away}**")
+        st.metric("Expected goals", f"{forecast['away_xg']:.1f}")
+        st.write(f"Goals scored / match: **{away_stats['gf_pg']:.1f}**")
+        st.write(f"Goals conceded / match: **{away_stats['ga_pg']:.1f}**")
+        st.write(f"Last five form: **{away_stats['form']}**")
+        st.write(f"Away record: **{away_stats['away_record']}**")
+
+    st.markdown("### 🔭 What to expect")
+    st.write(f"The model projects about **{total_xg:.1f} total goals** and an expected-goal difference of **{abs(margin):.1f}** in favor of **{home if margin >= 0 else away}**. The most likely rounded score is **{round(forecast['home_xg'])}–{round(forecast['away_xg'])}**; that score is a simple summary, not a certainty.")
+    ph, pd_, pa = forecast["home_win"], forecast["draw"], forecast["away_win"]
+    if max(ph, pd_, pa) < 0.45:
+        st.info("This projects as a fairly open matchup: no single outcome dominates the model. The first goal and defensive mistakes could have a large effect.")
+    elif ph > pa:
+        st.info(f"The model leans toward the home team ({ph:.0%} home win probability), but a draw ({pd_:.0%}) or away win ({pa:.0%}) remains possible.")
+    else:
+        st.info(f"The model leans toward the away team ({pa:.0%} away win probability), despite the listed home advantage. A home win ({ph:.0%}) or draw ({pd_:.0%}) remains possible.")
+
+    st.markdown("### 🏁 What each team needs to do to win")
+    home_attack = home_stats["gf_pg"]
+    away_defense = away_stats["ga_pg"]
+    away_attack = away_stats["gf_pg"]
+    home_defense = home_stats["ga_pg"]
+    home_points = []
+    away_points = []
+    if home_attack >= away_defense:
+        home_points.append("Use the attack to create sustained pressure; the historical scoring profile suggests opportunities may be available.")
+    else:
+        home_points.append("Be patient in possession and prioritize high-quality chances; the opponent's goals-against average suggests scoring may be harder.")
+    if away_attack >= home_defense:
+        away_points.append("Look to attack decisively and test the home defense; the scoring profile suggests the team can create chances.")
+    else:
+        away_points.append("Make transitions and set pieces count, and avoid giving away easy chances while building attacks carefully.")
+    home_points.append("Protect against the opponent's main scoring threat and avoid turnovers in dangerous areas.")
+    away_points.append("Manage the home team's early pressure, stay compact without the ball, and take chances when transitions open up.")
+    if ph >= pa:
+        home_points.append("The model's edge is on the home side: turn that into an early territorial advantage, but don't chase recklessly if the game stays level.")
+        away_points.append("An away result likely requires disciplined defending and efficient finishing; keep the match close and capitalize on counterattacks.")
+    else:
+        home_points.append("The model does not give the home side the stronger forecast: defensive organization and converting limited chances are especially important.")
+        away_points.append("The model favors the away side, but the team still needs to handle the venue disadvantage and avoid giving the home team momentum.")
+    left, right = st.columns(2)
+    with left:
+        st.markdown(f"**{home}**")
+        for point in home_points:
+            st.markdown(f"- {point}")
+    with right:
+        st.markdown(f"**{away}**")
+        for point in away_points:
+            st.markdown(f"- {point}")
+
+    st.caption(f"Model sample: {home_stats['played']} matches for the home team and {away_stats['played']} for the away team. This is a data-based scouting summary, not tactical video analysis. It does not know player availability, injuries, weather, actual field surface, or current lineups.")
+
+
 # ---------- Header ----------
 st.markdown("""
 <div class="hero">
@@ -250,6 +366,9 @@ with predict_tab:
         st.markdown(f'''<div class="prob-wrap"><div class="prob-home" style="width:{p['home_win']*100:.3f}%"></div><div class="prob-draw" style="width:{p['draw']*100:.3f}%"></div><div class="prob-away" style="width:{p['away_win']*100:.3f}%"></div></div>''', unsafe_allow_html=True)
         st.caption("Home win · Draw · Away win, left to right")
         st.info(f"**How to read this:** The model blends each team's goals scored and conceded with the league-wide scoring average, shrinks small samples toward that average, and applies a modest home advantage. Current sample: {p['games_home']} matches for the home team and {p['games_away']} for the away team. **Data confidence: {confidence}.** Probabilities are model estimates, not betting odds or guarantees.")
+        if st.button("🔎  Matchup analysis · venue, strengths & keys to win", use_container_width=True, type="primary", key="open_matchup_report"):
+            show_matchup_report(home, away, p)
+        st.caption("Open the matchup report for venue context, team comparisons, what to expect, and practical keys to winning for each side.")
         recent1, recent2 = st.columns(2)
         with recent1:
             st.markdown(f"**{home} · recent form**")

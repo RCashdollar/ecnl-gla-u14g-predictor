@@ -5,12 +5,19 @@ import streamlit as st
 
 APP_DIR = Path(__file__).parent
 teams_df = pd.read_csv(APP_DIR / "teams.csv")
+if teams_df.empty or "team" not in teams_df.columns:
+    st.error("teams.csv is empty or invalid. Restore the provided teams.csv file in the repository.")
+    st.stop()
 teams = sorted(teams_df["team"].dropna().astype(str).unique().tolist())
 raw = pd.read_csv(APP_DIR / "results.csv", keep_default_na=False)
 
 st.set_page_config(page_title="GLA U14 Girls Predictor", page_icon="⚽", layout="wide")
 st.title("⚽ ECNL-RL U14 Girls — Great Lakes Alliance")
-st.caption("2026–27 season • Initial prototype • Results and predictions are provisional until the match ledger is fully reconciled.")
+st.caption("2026–27 season • Experimental model • Results and predictions remain provisional until the source ledger is fully reconciled.")
+
+source_url = "https://leaguetables.soccer/ecnl-rl-girls/u14"
+st.info("Automatic results refresh is configured through the repository's daily GitHub Actions workflow. Imported scores are checked against LeagueTables' public U14 GLA East/West pages; if the source layout changes or a check fails, the last saved results are preserved.")
+st.markdown(f"Results source: [LeagueTables — ECNL RL Girls U14]({source_url})")
 
 with st.sidebar:
     st.header("Data controls")
@@ -207,4 +214,4 @@ with tab4:
     st.download_button("Download current results CSV", raw.to_csv(index=False).encode("utf-8"), "gla_u14g_results.csv", "text/csv")
 
 st.markdown("---")
-st.caption("Prototype generated from the project workbook. No live scraping or cloud database is connected yet.")
+st.caption("Results are stored in this repository and refreshed by a scheduled workflow. LeagueTables reports computed standings; check the league or club for official rulings and score corrections.")

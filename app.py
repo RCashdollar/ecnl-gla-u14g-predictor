@@ -141,7 +141,8 @@ def load_schedule() -> pd.DataFrame:
     df["home_team"] = df["home_team"].map(normalize_team_name)
     df["away_team"] = df["away_team"].map(normalize_team_name)
     df = df[df["date"].notna() & df["home_team"].ne("") & df["away_team"].ne("")]
-    df = df[df["date"] >= pd.Timestamp.now().normalize()]
+    # Keep past-dated fixtures too: if no final score exists, they must remain visible
+    # as Awaiting Result rather than silently disappearing from the app.
     df["fixture_key"] = df.apply(lambda r: (r["date"], frozenset([r["home_team"], r["away_team"]])), axis=1)
     return df.drop_duplicates("fixture_key").drop(columns="fixture_key").sort_values(["date", "kickoff"]).reset_index(drop=True)
 
@@ -443,7 +444,7 @@ def projected_standings(conference: str) -> pd.DataFrame:
     for team in names:
         row = current.loc[team] if team in current.index else pd.Series({"Pts":0,"W":0,"D":0,"L":0,"GF":0,"GA":0,"GD":0,"P":0})
         add_pts = add_gf = add_ga = 0.0
-        for _, fx in schedule.iterrows():
+        for _, fx in schedule[schedule["date"] >= pd.Timestamp.now().normalize()].iterrows():
             home, away = fx["home_team"], fx["away_team"]
             if home not in conf_map or away not in conf_map or conference not in {conf_map.get(home), conf_map.get(away)}:
                 continue
@@ -466,35 +467,58 @@ def projected_standings(conference: str) -> pd.DataFrame:
             "GF": float(row["GF"]) + add_gf,
             "GA": float(row["GA"]) + add_ga,
             "GD": float(row["GD"]) + add_gf - add_ga,
-            "Scheduled games modeled": sum(1 for _, fx in schedule.iterrows() if team in {fx["home_team"], fx["away_team"]} and conference in {conf_map.get(fx["home_team"]), conf_map.get(fx["away_team"])}),
+            "Scheduled games modeled": sum(1 for _, fx in schedule[schedule["date"] >= pd.Timestamp.now().normalize()].iterrows() if team in {fx["home_team"], fx["away_team"]} and conference in {conf_map.get(fx["home_team"]), conf_map.get(fx["away_team"])}),
         })
     out = pd.DataFrame(projected).sort_values(["Projected Pts", "GD", "Current Pts", "Team"], ascending=[False,False,False,True]).reset_index(drop=True)
     out.insert(0, "Rank", range(1, len(out)+1))
     return out
 
 if page == "Schedule":
-    st.caption("Each upcoming fixture includes the current model projection. Kickoff and venue should be verified with the league or clubs.")
-    if schedule.empty:
-        st.info("No upcoming fixtures are loaded. Add confirmed fixtures to upcoming_schedule.csv.")
+    today = pd.Timestamp.now().normalize()
+    st.caption("Fixtures are marked Final only when a confirmed score is in the results ledger. Past-dated fixtures without a score stay visible as Awaiting Result.")
+    fc1, fc2 = st.columns(2)
+    with fc1: schedule_team = st.selectbox("Team", ["All teams"] + team_names, format_func=lambda x: "All teams" if x == "All teams" else short_name(x), key="schedule_team")
+    with fc2: schedule_conf = st.selectbox("Conference", ["All conferences", "GLA East", "GLA West", "Cross-conference"], key="schedule_conf")
+    shown = schedule.copy()
+    if schedule_team != "All teams": shown = shown[(shown["home_team"] == schedule_team) | (shown["away_team"] == schedule_team)]
+    if schedule_conf != "All conferences": shown = shown[shown["conference"] == schedule_conf]
+    # A fixture is complete only when its date/team pairing has a scored final in results.csv.
+    completed_keys = set()
+    for _, m in results.iterrows():
+        completed_keys.add((pd.Timestamp(m["date"]).normalize(), frozenset([m["home_team"], m["away_team"]])))
+    def fixture_status(fx):
+        key = (pd.Timestamp(fx["date"]).normalize(), frozenset([fx["home_team"], fx["away_team"]]))
+        if key in completed_keys: return "Final"
+        if pd.Timestamp(fx["date"]).normalize() < today: return "Awaiting Result"
+        return "Upcoming"
+    shown = shown.copy()
+    shown["Fixture Status"] = shown.apply(fixture_status, axis=1)
+    pending = shown[shown["Fixture Status"] == "Awaiting Result"]
+    future = shown[shown["Fixture Status"] == "Upcoming"]
+    if pending.empty:
+        st.success("No past-dated fixtures are currently awaiting results.")
     else:
-        fc1, fc2 = st.columns(2)
-        with fc1: schedule_team = st.selectbox("Team", ["All teams"] + team_names, format_func=lambda x: "All teams" if x == "All teams" else short_name(x), key="schedule_team")
-        with fc2: schedule_conf = st.selectbox("Conference", ["All conferences", "GLA East", "GLA West", "Cross-conference"], key="schedule_conf")
-        shown = schedule.copy()
-        if schedule_team != "All teams": shown = shown[(shown["home_team"] == schedule_team) | (shown["away_team"] == schedule_team)]
-        if schedule_conf != "All conferences": shown = shown[shown["conference"] == schedule_conf]
-        if shown.empty: st.info("No fixtures match those filters.")
-        for idx, (_, fx) in enumerate(shown.iterrows()):
-            pred = prediction(fx["home_team"], fx["away_team"])
+        st.markdown("### ⏳ Awaiting Results")
+        st.warning(f"{len(pending)} past-dated fixture(s) have no confirmed score in the results ledger. They remain here until a final score is captured.")
+        for idx, (_, fx) in enumerate(pending.iterrows()):
             with st.container(border=True):
-                st.caption(f"{fx['date'].strftime('%a, %b %d')} · {str(fx['kickoff']).strip() or 'Time TBD'}")
-                a, b, c = st.columns([4, 2, 4])
-                with a: st.markdown(f"**{short_name(fx['home_team'])}**")
-                with b: st.markdown(f"<div style='text-align:center;font-size:1.45rem;font-weight:900;color:#b8f36b'>{round(pred['home_xg'])}–{round(pred['away_xg'])}</div>", unsafe_allow_html=True)
-                with c: st.markdown(f"**{short_name(fx['away_team'])}**")
-                st.caption(f"Expected goals {pred['home_xg']:.1f}–{pred['away_xg']:.1f} · Home {pred['home_win']:.0%} · Draw {pred['draw']:.0%} · Away {pred['away_win']:.0%}")
-                if st.button("View match analysis", key=f"schedule_report_{idx}", use_container_width=True):
-                    show_matchup_report(fx["home_team"], fx["away_team"], pred)
+                st.caption(f"⏳ AWAITING RESULT · {fx['date'].strftime('%a, %b %d')} · {str(fx['kickoff']).strip() or 'Time TBD'}")
+                st.markdown(f"**{short_name(fx['home_team'])}** vs **{short_name(fx['away_team'])}**")
+                st.caption(f"Venue: {str(fx['venue']).strip() or 'Venue TBD'}")
+    st.markdown("### Upcoming Fixtures")
+    if future.empty:
+        st.info("No upcoming fixtures match those filters.")
+    for idx, (_, fx) in enumerate(future.iterrows()):
+        pred = prediction(fx["home_team"], fx["away_team"])
+        with st.container(border=True):
+            st.caption(f"UPCOMING · {fx['date'].strftime('%a, %b %d')} · {str(fx['kickoff']).strip() or 'Time TBD'}")
+            a, b, c = st.columns([4, 2, 4])
+            with a: st.markdown(f"**{short_name(fx['home_team'])}**")
+            with b: st.markdown(f"<div style='text-align:center;font-size:1.45rem;font-weight:900;color:#b8f36b'>{round(pred['home_xg'])}–{round(pred['away_xg'])}</div>", unsafe_allow_html=True)
+            with c: st.markdown(f"**{short_name(fx['away_team'])}**")
+            st.caption(f"Venue: {str(fx['venue']).strip() or 'Venue TBD'} · Expected goals {pred['home_xg']:.1f}–{pred['away_xg']:.1f} · Home {pred['home_win']:.0%} · Draw {pred['draw']:.0%} · Away {pred['away_win']:.0%}")
+            if st.button("View match analysis", key=f"schedule_report_{idx}", use_container_width=True):
+                show_matchup_report(fx["home_team"], fx["away_team"], pred)
 
 elif page == "Analysis":
     c1, c2 = st.columns(2)

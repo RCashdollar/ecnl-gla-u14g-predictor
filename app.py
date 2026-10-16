@@ -13,7 +13,7 @@ TEAMS_PATH = APP_DIR / "teams.csv"
 SCHEDULE_PATH = APP_DIR / "upcoming_schedule.csv"
 
 st.set_page_config(
-    page_title="ECNL-RL U14 Girls | GLA Predictor",
+    page_title="ECNL-RL GLA",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -449,7 +449,7 @@ if "current_page" not in st.session_state:
 st.markdown("""
 <div class="hero">
   <div class="hero-kicker">2026–27 Season · Great Lakes Alliance</div>
-  <h1>⚽ GLA U14 Girls</h1>
+  <h1>⚽ ECNL-RL GLA</h1>
   <p>Schedules, match forecasts, and the race for a top-two finish.</p>
 </div>
 """, unsafe_allow_html=True)
@@ -518,6 +518,7 @@ def projected_standings(conference: str) -> pd.DataFrame:
     for team in names:
         row = current.loc[team] if team in current.index else pd.Series({"Pts":0,"W":0,"D":0,"L":0,"GF":0,"GA":0,"GD":0,"P":0})
         add_pts = add_gf = add_ga = 0.0
+        add_wins = add_draws = add_losses = 0.0
         for _, fx in schedule.iterrows():
             home, away = fx["home_team"], fx["away_team"]
             if home not in conf_map or away not in conf_map or conference not in {conf_map.get(home), conf_map.get(away)}:
@@ -527,17 +528,25 @@ def projected_standings(conference: str) -> pd.DataFrame:
             pred = prediction(home, away)
             if team == home:
                 add_pts += 3 * pred["home_win"] + pred["draw"]
+                add_wins += pred["home_win"]
+                add_draws += pred["draw"]
+                add_losses += pred["away_win"]
                 add_gf += pred["home_xg"]
                 add_ga += pred["away_xg"]
             else:
                 add_pts += 3 * pred["away_win"] + pred["draw"]
+                add_wins += pred["away_win"]
+                add_draws += pred["draw"]
+                add_losses += pred["home_win"]
                 add_gf += pred["away_xg"]
                 add_ga += pred["home_xg"]
         projected.append({
             "Team": team,
             "Current Pts": float(row["Pts"]),
             "Projected Pts": float(row["Pts"]) + add_pts,
-            "W": int(row["W"]), "D": int(row["D"]), "L": int(row["L"]),
+            "W": float(row["W"]) + add_wins,
+            "D": float(row["D"]) + add_draws,
+            "L": float(row["L"]) + add_losses,
             "GF": float(row["GF"]) + add_gf,
             "GA": float(row["GA"]) + add_ga,
             "GD": float(row["GD"]) + add_gf - add_ga,
@@ -589,7 +598,7 @@ elif page == "Analysis":
         if st.button("Open full matchup analysis", type="primary", use_container_width=True): show_matchup_report(home, away, pred)
 
 elif page == "Standings":
-    st.caption("East and West are shown separately below. Each table includes all completed conference matches for teams in that group, including cross-conference matches. Projected points add expected points from upcoming fixtures involving those teams.")
+    st.caption("East and West are shown separately below. Current tables count completed matches, including cross-conference matches. Projected tables add expected wins, draws, losses, goals, and points from remaining fixtures. Decimal records represent probabilities, not literal match outcomes.")
 
     def render_standings_table(conference: str, projected_view: bool = False) -> None:
         table = projected_standings(conference) if projected_view else standings(results, conference_only=False)
@@ -601,7 +610,8 @@ elif page == "Standings":
             return
         if projected_view:
             display = table[["Rank", "Team", "Projected Pts", "W", "L", "D", "GF", "GA", "GD"]].copy()
-            display["Projected Pts"] = display["Projected Pts"].map(lambda x: f"{x:.1f}")
+            for col in ["Projected Pts", "W", "L", "D"]:
+                display[col] = display[col].map(lambda x: f"{x:.1f}")
             for col in ["GF", "GA", "GD"]:
                 display[col] = display[col].map(lambda x: f"{x:+.1f}" if col == "GD" else f"{x:.1f}")
         else:
@@ -662,4 +672,4 @@ elif page == "Insights":
     else: st.info("No completed matches for this team are in the current results ledger.")
 
 st.markdown("---")
-st.caption("ECNL-RL U14 Girls · Great Lakes Alliance · 2026–27 · Forecasts are estimates based on the available verified results.")
+st.caption("ECNL-RL GLA · 2026–27 · Forecasts are estimates based on the available verified results.")

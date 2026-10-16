@@ -312,24 +312,52 @@ def show_matchup_report(home: str, away: str, forecast: dict) -> None:
 
     st.markdown("### 🚨 Bottom line up front")
     st.markdown(
-        f"- **Forecast:** {home} **{forecast['home_xg']:.1f} – {forecast['away_xg']:.1f}** {away}; "
-        f"the model gives the larger expected-goal total to **{favored}**."
+        f"- **{favored} has the edge:** the model projects **{forecast['home_xg']:.1f}–{forecast['away_xg']:.1f}** expected goals, "
+        f"a **{abs(margin):.1f}-goal** advantage. A **{round(forecast['home_xg'])}–{round(forecast['away_xg'])}** type of result is plausible, but not guaranteed."
     )
     st.markdown(
-        f"- **Match outlook:** {outlook}. Win probabilities are **{ph:.0%} home · {pd_:.0%} draw · {pa:.0%} away**."
-    )
-    st.markdown(
-        f"- **Key statistical contrast:** {home} score **{home_stats['gf_pg']:.1f}** and concede **{home_stats['ga_pg']:.1f}** per match; "
-        f"{away} score **{away_stats['gf_pg']:.1f}** and concede **{away_stats['ga_pg']:.1f}**."
+        f"- **Why the matchup looks { 'close' if abs(margin) < 0.8 else 'less even' }:** {home} averages **{home_stats['gf_pg']:.1f} scored / {home_stats['ga_pg']:.1f} conceded** per match; "
+        f"{away} averages **{away_stats['gf_pg']:.1f} scored / {away_stats['ga_pg']:.1f} conceded**."
     )
     st.markdown(
         f"- **Recent form:** {home} **{home_stats['form']}**; {away} **{away_stats['form']}**. "
-        f"The report uses {home_stats['played']} and {away_stats['played']} completed matches, respectively."
+        f"The sample is {home_stats['played']} completed matches for {home} and {away_stats['played']} for {away}."
     )
-    if min(home_stats["played"], away_stats["played"]) < 5:
-        st.warning("**Caution:** at least one team has fewer than five completed matches, so averages and the forecast may shift considerably as more results arrive.")
+    st.markdown(
+        f"- **Win probabilities:** **{ph:.0%} home · {pd_:.0%} draw · {pa:.0%} away**. "
+        f"These are model estimates based on recorded results, not guarantees."
+    )
+    st.markdown("### Why the matchup looks close" if abs(margin) < 0.8 else "### Why one team has the edge")
+    reasons = []
+    if home_stats['gf_pg'] >= 2.5:
+        reasons.append(f"**{home}'s attack is productive:** {home_stats['gf_pg']:.1f} goals scored per match.")
+    elif home_stats['gf_pg'] <= 1.7:
+        reasons.append(f"**{home}'s offense is the concern:** {home_stats['gf_pg']:.1f} goals scored per match.")
     else:
-        st.caption("Forecasts are estimates from recorded results, not guarantees; player availability, lineups, and tactical matchups are not included.")
+        reasons.append(f"**{home}'s attack is in the middle range:** {home_stats['gf_pg']:.1f} goals scored per match.")
+    if away_stats['gf_pg'] >= 2.5:
+        reasons.append(f"**{away}'s attack is productive:** {away_stats['gf_pg']:.1f} goals scored per match.")
+    elif away_stats['gf_pg'] <= 1.7:
+        reasons.append(f"**{away}'s offense is the concern:** {away_stats['gf_pg']:.1f} goals scored per match.")
+    else:
+        reasons.append(f"**{away}'s attack is in the middle range:** {away_stats['gf_pg']:.1f} goals scored per match.")
+    stronger_defense = home if home_stats['ga_pg'] < away_stats['ga_pg'] else away
+    stronger_ga = min(home_stats['ga_pg'], away_stats['ga_pg'])
+    reasons.append(f"**Defensive comparison:** {stronger_defense} has the lower goals-against average at {stronger_ga:.1f} per match.")
+    if min(home_stats['played'], away_stats['played']) < 5:
+        reasons.append("**The sample is small:** at least one team has fewer than five completed games, so its averages can move noticeably after another result.")
+    for reason in reasons:
+        st.markdown(f"- {reason}")
+
+    st.markdown("### The part I'd investigate")
+    simple_home = (home_stats['gf_pg'] + away_stats['ga_pg']) / 2
+    simple_away = (away_stats['gf_pg'] + home_stats['ga_pg']) / 2
+    st.write(
+        f"The expected-goals calculation is the key. A simple average of {home}'s scoring rate and {away}'s goals-conceded rate is **{simple_home:.1f}** goals for {home}; "
+        f"the equivalent estimate for {away} is **{simple_away:.1f}**. The model projects **{forecast['home_xg']:.1f}** and **{forecast['away_xg']:.1f}**, respectively. "
+        "Differences can come from league-average adjustments, recency weighting, and home advantage, so this comparison is a diagnostic—not a replacement forecast."
+    )
+    st.caption("The model does not account for player availability, injuries, weather, actual field surface, lineups, or tactical video analysis.")
 
     st.markdown("### 📍 Venue & context")
     st.write(f"**Listed home team:** {home}")
@@ -530,7 +558,7 @@ if page == "Schedule":
 
 elif page == "Analysis":
     c1, c2 = st.columns(2)
-    with c1: home = st.selectbox("Home team", team_names, format_func=short_name, key="analysis_home")
+    with c1: home = st.selectbox("Home team", team_names, index=team_names.index("Elite FC ECNL RL G2012/13") if "Elite FC ECNL RL G2012/13" in team_names else 0, format_func=short_name, key="analysis_home")
     with c2: away = st.selectbox("Away team", [t for t in team_names if t != home], format_func=short_name, key="analysis_away")
     if home != away:
         pred = prediction(home, away)
@@ -589,7 +617,7 @@ elif page == "Standings":
     st.caption("Current standings use completed results only. Projected points are estimates, not guaranteed outcomes. These are predictor standings grouped by the app's East/West labels, not official postseason qualification tables.")
 
 elif page == "Insights":
-    selected = st.selectbox("Choose a team", team_names, format_func=short_name, key="insight_team")
+    selected = st.selectbox("Choose a team", team_names, index=team_names.index("Elite FC ECNL RL G2012/13") if "Elite FC ECNL RL G2012/13" in team_names else 0, format_func=short_name, key="insight_team")
     games = team_matches(selected)
     overall = standings(results, conference_only=False).set_index("Team").loc[selected]
     conference = conf_map.get(selected, "GLA West")

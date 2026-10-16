@@ -660,7 +660,7 @@ elif page == "What If":
             index=0,
             key="whatif_period_v2",
             label_visibility="collapsed",
-            vertical=True,
+            horizontal=False,
         )
         today = pd.Timestamp.now().normalize()
         if period == "Next 7 days":

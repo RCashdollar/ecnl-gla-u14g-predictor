@@ -688,16 +688,39 @@ elif page == "What If":
                 kickoff = str(fx.get("kickoff", "")).strip() or "Kickoff TBD"
                 with st.container(border=True):
                     st.caption(f"{fx['date'].strftime('%a, %b %d')} · {kickoff}")
-                    st.markdown(f"**{short_name(fx['home_team'])}**  vs  **{short_name(fx['away_team'])}**")
+                    home_short, away_short = short_name(fx["home_team"]), short_name(fx["away_team"])
+                    st.markdown(f"**{home_short}**  vs  **{away_short}**")
+                    # Show the model's three-way probabilities beside the simple winner/draw choices.
                     outcome = st.radio(
                         "Choose result",
                         ["Home win", "Draw", "Away win"],
                         index=["Home win", "Draw", "Away win"].index(default_outcome),
-                        format_func=lambda value, h=short_name(fx['home_team']), a=short_name(fx['away_team']): {"Home win": f"{h} wins", "Draw": "Draw", "Away win": f"{a} wins"}[value],
+                        format_func=lambda value, h=home_short, a=away_short, ph=pred["home_win"], pd_=pred["draw"], pa=pred["away_win"]: {
+                            "Home win": f"{h} wins  ·  {ph:.0%}",
+                            "Draw": f"Draw  ·  {pd_:.0%}",
+                            "Away win": f"{a} wins  ·  {pa:.0%}",
+                        }[value],
                         key=f"whatif_outcome_v2_{ix}",
                         horizontal=False,
                         label_visibility="collapsed",
                     )
+                    # Add historical head-to-head context when these teams have already met.
+                    prior = results[
+                        ((results["home_team"] == fx["home_team"]) & (results["away_team"] == fx["away_team"])) |
+                        ((results["home_team"] == fx["away_team"]) & (results["away_team"] == fx["home_team"]))
+                    ]
+                    if not prior.empty:
+                        h_wins = draws = a_wins = 0
+                        for _, old_match in prior.iterrows():
+                            home_goals, away_goals = int(old_match["home_goals"]), int(old_match["away_goals"])
+                            home_team_old = old_match["home_team"]
+                            if home_goals == away_goals:
+                                draws += 1
+                            elif (home_goals > away_goals and home_team_old == fx["home_team"]) or (home_goals < away_goals and home_team_old == fx["away_team"]):
+                                h_wins += 1
+                            else:
+                                a_wins += 1
+                        st.caption(f"Previous meetings: {home_short} {h_wins}W · {draws}D · {a_wins}L vs {away_short} ({len(prior)} game{'s' if len(prior) != 1 else ''})")
                     overrides[ix] = outcome
 
         def scenario_table(overrides_local: dict[int, str]) -> pd.DataFrame:

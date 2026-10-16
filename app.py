@@ -597,7 +597,7 @@ if page == "Upcoming":
                     show_matchup_report(fx["home_team"], fx["away_team"], pred)
 
 elif page == "Schedule":
-    st.caption("A mobile-friendly season agenda: pick a month, then scan full-width match cards. No cramped seven-column calendar grid.")
+    st.caption("A calendar designed for phones: browse by month, then scan games grouped by date. No tiny calendar squares or cramped columns.")
     calendar_rows = []
     for _, m in results.iterrows():
         calendar_rows.append({"date": m["date"], "home_team": m["home_team"], "away_team": m["away_team"], "kickoff": "", "venue": "", "kind": "Final", "score": f"{int(m['home_goals'])}–{int(m['away_goals'])}", "pred": None})
@@ -612,39 +612,41 @@ elif page == "Schedule":
         current_period = pd.Timestamp.now().to_period("M")
         default_month = months.index(current_period) if current_period in months else max(0, len(months)-1)
         month_choice = st.selectbox("Month", months, index=default_month, format_func=lambda x: x.strftime("%B %Y"), key="calendar_month_agenda")
-        status_filter = st.segmented_control("Show", options=["All games", "Upcoming", "Results"], default="All games", key="calendar_status_filter") if hasattr(st, "segmented_control") else st.radio("Show", ["All games", "Upcoming", "Results"], horizontal=True, key="calendar_status_filter_radio")
+        status_filter = st.radio("Games", ["Upcoming", "All games", "Results"], index=0, horizontal=True, key="calendar_status_filter_radio")
+        team_filter = st.selectbox("Team", ["Elite FC ECNL RL G2012/13", "All teams"] + [t for t in team_names if t != "Elite FC ECNL RL G2012/13"], format_func=lambda t: "All teams" if t == "All teams" else short_name(t), key="calendar_team_filter")
         month_df = cal_df[cal_df["date"].dt.to_period("M") == month_choice].copy()
         if status_filter == "Upcoming": month_df = month_df[month_df["kind"] == "Upcoming"]
         elif status_filter == "Results": month_df = month_df[month_df["kind"] == "Final"]
-        team_filter = st.selectbox("Team filter", ["All teams"] + team_names, index=1 if "Elite FC ECNL RL G2012/13" in team_names else 0, format_func=lambda t: "All teams" if t == "All teams" else short_name(t), key="calendar_team_filter")
         if team_filter != "All teams":
             month_df = month_df[(month_df["home_team"] == team_filter) | (month_df["away_team"] == team_filter)]
         month_df = month_df.sort_values(["date", "kickoff"])
-        st.caption(f"{len(month_df)} game{'s' if len(month_df) != 1 else ''} · Final scores are confirmed; upcoming scores are model projections.")
+        st.markdown(f"<div style='display:flex;gap:8px;flex-wrap:wrap;margin:.25rem 0 .8rem'><span style='background:#202938;border:1px solid #354151;border-radius:999px;padding:5px 11px;font-size:.82rem'>{len(month_df)} games</span><span style='background:#202938;border:1px solid #354151;border-radius:999px;padding:5px 11px;font-size:.82rem'>Blue score = projection</span><span style='background:#202938;border:1px solid #354151;border-radius:999px;padding:5px 11px;font-size:.82rem'>Green score = final</span></div>", unsafe_allow_html=True)
         if month_df.empty:
             st.info("No games match these filters for this month.")
-        for idx, (_, g) in enumerate(month_df.iterrows()):
-            with st.container(border=True):
-                date_text = g["date"].strftime("%A, %b %d")
-                if g["kind"] == "Final":
-                    st.caption(f"{date_text} · FINAL")
-                    score_color = "#b8f36b"
-                else:
-                    kickoff = g.get("kickoff", "") or "Time TBD"
-                    st.caption(f"{date_text} · {kickoff} · UPCOMING")
-                    score_color = "#8fc5ff"
-                c1, c2, c3 = st.columns([4, 2, 4])
-                with c1: st.markdown(f"**{short_name(g['home_team'])}**")
-                with c2: st.markdown(f"<div style='text-align:center;font-size:1.35rem;font-weight:900;color:{score_color}'>{g['score']}</div>", unsafe_allow_html=True)
-                with c3: st.markdown(f"**{short_name(g['away_team'])}**")
-                if g["kind"] == "Upcoming":
-                    st.caption(str(g.get("venue", "")).strip() or "Venue TBD")
-                    pred = g["pred"]
-                    st.caption(f"Win probabilities · Home {pred['home_win']:.0%} / Draw {pred['draw']:.0%} / Away {pred['away_win']:.0%}")
-                    if st.button("View match analysis", key=f"calendar_report_{idx}", use_container_width=True):
-                        show_matchup_report(g["home_team"], g["away_team"], pred)
-                else:
-                    st.caption("Confirmed result · Counts in current standings.")
+        else:
+            for date_value, day_df in month_df.groupby(month_df["date"].dt.date, sort=True):
+                day_stamp = pd.Timestamp(date_value)
+                st.markdown(f"<div style='display:flex;align-items:center;gap:12px;margin:1rem 0 .45rem;padding-bottom:.45rem;border-bottom:1px solid #303a49'><div style='min-width:54px;text-align:center;background:#202938;border:1px solid #354151;border-radius:12px;padding:6px 8px'><div style='font-size:.68rem;color:#b8f36b;font-weight:800;text-transform:uppercase'>{day_stamp.strftime('%a')}</div><div style='font-size:1.35rem;font-weight:900;line-height:1.2'>{day_stamp.strftime('%d')}</div></div><div><div style='font-weight:800;font-size:1rem'>{day_stamp.strftime('%B %d, %Y')}</div><div style='color:#aab4c4;font-size:.78rem'>{len(day_df)} game{'s' if len(day_df) != 1 else ''}</div></div></div>", unsafe_allow_html=True)
+                for idx, (_, g) in enumerate(day_df.iterrows()):
+                    is_final = g["kind"] == "Final"
+                    score_color = "#b8f36b" if is_final else "#8fc5ff"
+                    status_label = "FINAL" if is_final else "PROJECTED"
+                    kickoff = str(g.get("kickoff", "")).strip() or ("Kickoff not listed" if not is_final else "")
+                    venue = str(g.get("venue", "")).strip()
+                    with st.container(border=True):
+                        st.caption((kickoff + " · " if kickoff else "") + status_label)
+                        st.markdown(f"<div style='display:flex;align-items:center;gap:8px;width:100%;margin:.2rem 0 .35rem'><div style='flex:1;min-width:0;font-weight:750;overflow-wrap:anywhere'>{short_name(g['home_team'])}</div><div style='flex:0 0 auto;text-align:center;font-size:1.35rem;font-weight:900;color:{score_color};padding:0 5px'>{g['score']}</div><div style='flex:1;min-width:0;text-align:right;font-weight:750;overflow-wrap:anywhere'>{short_name(g['away_team'])}</div></div>", unsafe_allow_html=True)
+                        if venue:
+                            st.caption("📍 " + venue)
+                        elif not is_final:
+                            st.caption("📍 Venue TBD")
+                        if not is_final:
+                            pred = g["pred"]
+                            st.caption(f"Win chance · {short_name(g['home_team'])} {pred['home_win']:.0%}  |  Draw {pred['draw']:.0%}  |  {short_name(g['away_team'])} {pred['away_win']:.0%}")
+                            if st.button("Match preview", key=f"calendar_report_{g['date']}_{g['home_team']}_{g['away_team']}", use_container_width=True):
+                                show_matchup_report(g["home_team"], g["away_team"], pred)
+                        else:
+                            st.caption("Confirmed result · Counts in current standings.")
 
 elif page == "What If":
     st.markdown("Test hypothetical scores for upcoming games and see how they change the projected East and West tables. Your choices are temporary and do not change confirmed results or the schedule.")

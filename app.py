@@ -554,7 +554,10 @@ if page == "Schedule":
         st.info("No upcoming fixtures are loaded. Add confirmed fixtures to upcoming_schedule.csv.")
     else:
         fc1, fc2 = st.columns(2)
-        with fc1: schedule_team = st.selectbox("Team", ["All teams"] + team_names, format_func=lambda x: "All teams" if x == "All teams" else short_name(x), key="schedule_team")
+        schedule_options = ["All teams"] + team_names
+        elite_team = next((t for t in team_names if short_name(t) == "Elite FC"), None)
+        schedule_default = schedule_options.index(elite_team) if elite_team in schedule_options else 0
+        with fc1: schedule_team = st.selectbox("Team", schedule_options, index=schedule_default, format_func=lambda x: "All teams" if x == "All teams" else short_name(x), key="schedule_team_elite_default_v3")
         with fc2: schedule_conf = st.selectbox("Conference", ["All conferences", "GLA East", "GLA West", "Cross-conference"], key="schedule_conf")
         shown = schedule.copy()
         if schedule_team != "All teams": shown = shown[(shown["home_team"] == schedule_team) | (shown["away_team"] == schedule_team)]
@@ -574,8 +577,8 @@ if page == "Schedule":
 
 elif page == "Analysis":
     c1, c2 = st.columns(2)
-    with c1: home = st.selectbox("Home team", team_names, index=team_names.index("Elite FC ECNL RL G2012/13") if "Elite FC ECNL RL G2012/13" in team_names else 0, format_func=short_name, key="analysis_home_v2")
-    with c2: away = st.selectbox("Away team", [t for t in team_names if t != home], index=([t for t in team_names if t != home].index("T3FC ECNL RL G2012/13") if home == "Elite FC ECNL RL G2012/13" and "T3FC ECNL RL G2012/13" in [t for t in team_names if t != home] else 0), format_func=short_name, key="analysis_away_v2")
+    with c1: home = st.selectbox("Home team", team_names, index=team_names.index("Elite FC ECNL RL G2012/13") if "Elite FC ECNL RL G2012/13" in team_names else 0, format_func=short_name, key="analysis_home_elite_default_v3")
+    with c2: away = st.selectbox("Away team", [t for t in team_names if t != home], index=([t for t in team_names if t != home].index("T3FC ECNL RL G2012/13") if home == "Elite FC ECNL RL G2012/13" and "T3FC ECNL RL G2012/13" in [t for t in team_names if t != home] else 0), format_func=short_name, key="analysis_away_elite_default_v3")
     if home != away:
         pred = prediction(home, away)
         st.markdown(f"<div class='pred-card'><div class='pred-team'>{short_name(home)} vs {short_name(away)}</div><div class='pred-score'>{round(pred['home_xg'])}–{round(pred['away_xg'])}</div><div style='text-align:center;color:#aab4c4'>Projected score</div></div>", unsafe_allow_html=True)
@@ -633,7 +636,7 @@ elif page == "Standings":
     st.caption("Current standings use completed results only. Projected points are estimates, not guaranteed outcomes. These are predictor standings grouped by the app's East/West labels, not official postseason qualification tables.")
 
 elif page == "Insights":
-    selected = st.selectbox("Choose a team", team_names, index=team_names.index("Elite FC ECNL RL G2012/13") if "Elite FC ECNL RL G2012/13" in team_names else 0, format_func=short_name, key="insight_team_v2")
+    selected = st.selectbox("Choose a team", team_names, index=team_names.index("Elite FC ECNL RL G2012/13") if "Elite FC ECNL RL G2012/13" in team_names else 0, format_func=short_name, key="insight_team_elite_default_v3")
     games = team_matches(selected)
     overall = standings(results, conference_only=False).set_index("Team").loc[selected]
     conference = conf_map.get(selected, "GLA West")

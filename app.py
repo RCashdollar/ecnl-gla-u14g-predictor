@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from math import exp, factorial
+import calendar as pycalendar
 import re
 import numpy as np
 import pandas as pd
@@ -504,10 +505,11 @@ else:
     st.markdown("### What would you like to explore?")
     tile_cols = st.columns(2)
     tiles = [
-        ("🗓️", "Upcoming Schedule", "Fixtures, projected scores, and probabilities", "Schedule"),
+        ("🗓️", "Season Calendar", "Games, results, venues, and projections", "Schedule"),
         ("⚽", "Match Analysis", "Compare any two teams", "Analysis"),
         ("🏆", "Standings", "Current table and projected finish", "Standings"),
         ("📈", "Team Insights", "Recent form and team performance", "Insights"),
+        ("🧪", "What If? Simulator", "Test hypothetical scores and standings", "What If"),
     ]
     for col, (emoji, title, desc, destination) in zip([tile_cols[0], tile_cols[1], tile_cols[0], tile_cols[1]], tiles):
         with col:
@@ -566,31 +568,140 @@ def projected_standings(conference: str) -> pd.DataFrame:
     return out
 
 if page == "Schedule":
-    st.caption("Each upcoming fixture includes the current model projection. Kickoff and venue should be verified with the league or clubs.")
-    if schedule.empty:
-        st.info("No upcoming fixtures are loaded. Add confirmed fixtures to upcoming_schedule.csv.")
+    st.caption("Browse the season by month. Completed matches show confirmed scores; future matches show model projections. Verify kickoff and venue with the league or clubs.")
+    # Combine confirmed results and future fixtures for the calendar without changing either CSV.
+    calendar_rows = []
+    for _, m in results.iterrows():
+        calendar_rows.append({"date": m["date"], "home_team": m["home_team"], "away_team": m["away_team"],
+                              "kickoff": "", "venue": "", "kind": "Final", "score": f"{int(m['home_goals'])}–{int(m['away_goals'])}"})
+    for _, fx in schedule.iterrows():
+        pred = prediction(fx["home_team"], fx["away_team"])
+        calendar_rows.append({"date": fx["date"], "home_team": fx["home_team"], "away_team": fx["away_team"],
+                              "kickoff": str(fx["kickoff"]).strip(), "venue": str(fx["venue"]).strip(), "kind": "Upcoming",
+                              "score": f"{round(pred['home_xg'])}–{round(pred['away_xg'])}", "pred": pred})
+    cal_df = pd.DataFrame(calendar_rows)
+    if cal_df.empty:
+        st.info("No results or fixtures are loaded yet.")
     else:
-        fc1, fc2 = st.columns(2)
-        schedule_options = ["All teams"] + team_names
-        elite_team = next((t for t in team_names if short_name(t) == "Elite FC"), None)
-        schedule_default = schedule_options.index(elite_team) if elite_team in schedule_options else 0
-        with fc1: schedule_team = st.selectbox("Team", schedule_options, index=schedule_default, format_func=lambda x: "All teams" if x == "All teams" else short_name(x), key="schedule_team_elite_default_v3")
-        with fc2: schedule_conf = st.selectbox("Conference", ["All conferences", "GLA East", "GLA West", "Cross-conference"], key="schedule_conf")
-        shown = schedule.copy()
-        if schedule_team != "All teams": shown = shown[(shown["home_team"] == schedule_team) | (shown["away_team"] == schedule_team)]
-        if schedule_conf != "All conferences": shown = shown[shown["conference"] == schedule_conf]
-        if shown.empty: st.info("No fixtures match those filters.")
-        for idx, (_, fx) in enumerate(shown.iterrows()):
-            pred = prediction(fx["home_team"], fx["away_team"])
-            with st.container(border=True):
-                st.caption(f"{fx['date'].strftime('%a, %b %d')} · {str(fx['kickoff']).strip() or 'Time TBD'}")
-                a, b, c = st.columns([4, 2, 4])
-                with a: st.markdown(f"**{short_name(fx['home_team'])}**")
-                with b: st.markdown(f"<div style='text-align:center;font-size:1.45rem;font-weight:900;color:#b8f36b'>{round(pred['home_xg'])}–{round(pred['away_xg'])}</div>", unsafe_allow_html=True)
-                with c: st.markdown(f"**{short_name(fx['away_team'])}**")
-                st.caption(f"Expected goals {pred['home_xg']:.1f}–{pred['away_xg']:.1f} · Home {pred['home_win']:.0%} · Draw {pred['draw']:.0%} · Away {pred['away_win']:.0%}")
-                if st.button("View match analysis", key=f"schedule_report_{idx}", use_container_width=True):
-                    show_matchup_report(fx["home_team"], fx["away_team"], pred)
+        months = sorted(cal_df["date"].dropna().dt.to_period("M").unique())
+        current_period = pd.Timestamp.now().to_period("M")
+        default_month = months.index(current_period) if current_period in months else max(0, len(months)-1)
+        month_choice = st.selectbox("Calendar month", months, index=default_month, format_func=lambda x: x.strftime("%B %Y"), key="calendar_month")
+        month_df = cal_df[cal_df["date"].dt.to_period("M") == month_choice].copy()
+        # Calendar grid, with concise event labels that remain readable on mobile.
+        weeks = pycalendar.monthcalendar(month_choice.year, month_choice.month)
+        st.markdown("#### Month view")
+        day_headers = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        header_cols = st.columns(7)
+        for col, day in zip(header_cols, day_headers):
+            col.markdown(f"<div style='text-align:center;font-size:.72rem;color:#aab4c4;font-weight:800'>{day}</div>", unsafe_allow_html=True)
+        for week in weeks:
+            cols = st.columns(7)
+            for col, day in zip(cols, week):
+                if day == 0:
+                    col.markdown("<div style='min-height:58px;border:1px solid #303a49;border-radius:6px;opacity:.25'></div>", unsafe_allow_html=True)
+                    continue
+                day_games = month_df[month_df["date"].dt.day == day]
+                labels = []
+                for _, g in day_games.head(3).iterrows():
+                    labels.append(f"<div style='font-size:.63rem;line-height:1.15;margin-top:3px;color:{'#b8f36b' if g['kind']=='Final' else '#8fc5ff'}'>{'✓ ' if g['kind']=='Final' else '• '}{short_name(g['home_team'])[:9]}<br>{short_name(g['away_team'])[:9]}<br><b>{g['score']}</b></div>")
+                extra = f"<div style='font-size:.6rem;color:#aab4c4'>+{len(day_games)-3} more</div>" if len(day_games) > 3 else ""
+                col.markdown(f"<div style='min-height:58px;padding:3px;border:1px solid #303a49;border-radius:6px;background:#171d27'><b style='font-size:.75rem'>{day}</b>{''.join(labels)}{extra}</div>", unsafe_allow_html=True)
+        st.markdown("#### Games this month")
+        if month_df.empty:
+            st.info("No matches are listed for this month.")
+        else:
+            for idx, (_, g) in enumerate(month_df.sort_values(["date", "kickoff"]).iterrows()):
+                with st.container(border=True):
+                    date_text = g["date"].strftime("%a, %b %d, %Y")
+                    status_text = "FINAL" if g["kind"] == "Final" else "PROJECTED"
+                    st.caption(f"{date_text} · {status_text}" + (f" · {g['kickoff']}" if g.get("kickoff") else ""))
+                    a, b, c = st.columns([4, 2, 4])
+                    with a: st.markdown(f"**{short_name(g['home_team'])}**")
+                    with b: st.markdown(f"<div style='text-align:center;font-size:1.35rem;font-weight:900;color:#b8f36b'>{g['score']}</div>", unsafe_allow_html=True)
+                    with c: st.markdown(f"**{short_name(g['away_team'])}**")
+                    if g["kind"] == "Upcoming":
+                        venue = g.get("venue", "") or "Venue TBD"
+                        st.caption(f"{venue} · Expected goals {g['pred']['home_xg']:.1f}–{g['pred']['away_xg']:.1f} · Home {g['pred']['home_win']:.0%} / Draw {g['pred']['draw']:.0%} / Away {g['pred']['away_win']:.0%}")
+                        if st.button("View match analysis", key=f"calendar_report_{idx}", use_container_width=True):
+                            show_matchup_report(g["home_team"], g["away_team"], g["pred"])
+                    else:
+                        st.caption("Confirmed result · This score counts in current standings.")
+
+elif page == "What If":
+    st.markdown("Test hypothetical scores for upcoming games and see how they change the projected East and West tables. Your choices are temporary and do not change confirmed results or the schedule.")
+    if schedule.empty:
+        st.info("No upcoming fixtures are loaded to simulate.")
+    else:
+        options = [f"{fx['date'].strftime('%b %d')} · {short_name(fx['home_team'])} vs {short_name(fx['away_team'])}" for _, fx in schedule.iterrows()]
+        chosen = st.multiselect("Choose upcoming games to change", options, max_selections=8, key="whatif_games", help="Select up to 8 games. Unselected games keep the model's current projection.")
+        index_by_label = {label: i for i, label in enumerate(options)}
+        overrides = {}
+        if chosen:
+            st.markdown("#### Set your hypothetical scores")
+            for label in chosen:
+                fx = schedule.iloc[index_by_label[label]]
+                pred = prediction(fx["home_team"], fx["away_team"])
+                st.markdown(f"**{fx['date'].strftime('%b %d')} · {short_name(fx['home_team'])} vs {short_name(fx['away_team'])}**")
+                sc1, sc2 = st.columns(2)
+                with sc1: hg = st.selectbox(f"{short_name(fx['home_team'])} goals", list(range(7)), index=min(6, max(0, round(pred['home_xg']))), key=f"whatif_hg_{index_by_label[label]}")
+                with sc2: ag = st.selectbox(f"{short_name(fx['away_team'])} goals", list(range(7)), index=min(6, max(0, round(pred['away_xg']))), key=f"whatif_ag_{index_by_label[label]}")
+                overrides[index_by_label[label]] = (int(hg), int(ag))
+        def scenario_table(overrides_local: dict[int, tuple[int, int]]) -> pd.DataFrame:
+            base = standings(results, conference_only=False).set_index("Team")
+            rows = []
+            for team in team_names:
+                cur = base.loc[team]
+                pts, wins, draws, losses = float(cur["Pts"]), float(cur["W"]), float(cur["D"]), float(cur["L"])
+                gf, ga = float(cur["GF"]), float(cur["GA"])
+                for ix, fx in schedule.iterrows():
+                    home, away = fx["home_team"], fx["away_team"]
+                    if team not in (home, away):
+                        continue
+                    if ix in overrides_local:
+                        xg_h, xg_a = overrides_local[ix]
+                        if xg_h > xg_a: hpts, apts, hw, ad, al = 3, 0, 1, 0, 1
+                        elif xg_h < xg_a: hpts, apts, hw, ad, al = 0, 3, 0, 0, 0
+                        else: hpts, apts, hw, ad, al = 1, 1, 0, 1, 0
+                        if team == home:
+                            pts += hpts; wins += hw; draws += (1 if xg_h == xg_a else 0); losses += (1 if xg_h < xg_a else 0); gf += xg_h; ga += xg_a
+                        else:
+                            pts += apts; wins += (1 if xg_a > xg_h else 0); draws += (1 if xg_h == xg_a else 0); losses += (1 if xg_a < xg_h else 0); gf += xg_a; ga += xg_h
+                    else:
+                        pred = prediction(home, away)
+                        if team == home:
+                            pts += 3*pred["home_win"] + pred["draw"]; wins += pred["home_win"]; draws += pred["draw"]; losses += pred["away_win"]; gf += pred["home_xg"]; ga += pred["away_xg"]
+                        else:
+                            pts += 3*pred["away_win"] + pred["draw"]; wins += pred["away_win"]; draws += pred["draw"]; losses += pred["home_win"]; gf += pred["away_xg"]; ga += pred["home_xg"]
+                rows.append({"Team":team,"Conference":conf_map.get(team,""),"Projected Pts":pts,"W":wins,"D":draws,"L":losses,"GF":gf,"GA":ga,"GD":gf-ga})
+            out = pd.DataFrame(rows)
+            out["Rank"] = out.groupby("Conference")["Projected Pts"].rank(method="first", ascending=False).astype(int)
+            return out.sort_values(["Conference","Rank","Team"]).reset_index(drop=True)
+        baseline = scenario_table({})
+        scenario = scenario_table(overrides)
+        if chosen:
+            st.markdown("#### Projected standings with your scenario")
+            st.caption("Unselected fixtures retain the model forecast. Selected fixtures use the exact scores you entered.")
+        else:
+            st.markdown("#### Baseline projected standings")
+            st.caption("Choose games above to test alternate outcomes. The baseline uses the model for every remaining fixture.")
+        for conf in ["GLA East", "GLA West"]:
+            st.markdown(f"##### {conf}")
+            left = baseline[baseline["Conference"] == conf].copy()
+            right = scenario[scenario["Conference"] == conf].copy()
+            display = left[["Rank","Team","Projected Pts"]].merge(right[["Team","Projected Pts"]],on="Team",suffixes=(" baseline"," scenario"))
+            display["Change"] = display["Projected Pts scenario"] - display["Projected Pts baseline"]
+            display["Team"] = display["Team"].map(short_name)
+            for col in ["Projected Pts baseline","Projected Pts scenario","Change"]:
+                display[col] = display[col].map(lambda v: f"{v:+.1f}" if col == "Change" else f"{v:.1f}")
+            st.dataframe(display.rename(columns={"Projected Pts baseline":"Baseline pts","Projected Pts scenario":"Scenario pts"}), use_container_width=True, hide_index=True)
+        if chosen:
+            st.markdown("#### Scenario scores")
+            for label in chosen:
+                ix = index_by_label[label]; fx = schedule.iloc[ix]; hg, ag = overrides[ix]
+                outcome = "Home win" if hg > ag else "Away win" if hg < ag else "Draw"
+                st.write(f"**{fx['date'].strftime('%b %d')} — {short_name(fx['home_team'])} {hg}–{ag} {short_name(fx['away_team'])}:** {outcome}")
+        st.caption("This is a what-if exercise, not a change to recorded results. Projections are estimates; standings are grouped by East/West labels and include cross-conference games for each team's record.")
 
 elif page == "Analysis":
     c1, c2 = st.columns(2)

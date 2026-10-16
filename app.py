@@ -459,7 +459,7 @@ def projected_standings(conference: str) -> pd.DataFrame:
     return out
 
 if page == "Schedule":
-    st.caption("Each upcoming fixture includes the current model projection. Kickoff and venue should be verified with the league or clubs.")
+    st.caption("Fixtures are compiled from the public team schedules for the 12-team GLA cohort. Details not yet published are shown as TBD; verify changes with the club or league.")
     if schedule.empty:
         st.info("No upcoming fixtures are loaded. Add confirmed fixtures to upcoming_schedule.csv.")
     else:
@@ -478,6 +478,9 @@ if page == "Schedule":
                 with a: st.markdown(f"**{short_name(fx['home_team'])}**")
                 with b: st.markdown(f"<div style='text-align:center;font-size:1.45rem;font-weight:900;color:#b8f36b'>{round(pred['home_xg'])}–{round(pred['away_xg'])}</div>", unsafe_allow_html=True)
                 with c: st.markdown(f"**{short_name(fx['away_team'])}**")
+                venue = str(fx.get("venue", "")).strip()
+                kickoff = str(fx.get("kickoff", "")).strip()
+                st.caption(f"📍 {venue if venue and venue.lower() not in {'nan', 'tbd'} else 'Venue TBD'}")
                 st.caption(f"Expected goals {pred['home_xg']:.1f}–{pred['away_xg']:.1f} · Home {pred['home_win']:.0%} · Draw {pred['draw']:.0%} · Away {pred['away_win']:.0%}")
                 if st.button("View match analysis", key=f"schedule_report_{idx}", use_container_width=True):
                     show_matchup_report(fx["home_team"], fx["away_team"], pred)
@@ -547,9 +550,9 @@ elif page == "Insights":
     games = team_matches(selected)
     overall = standings(results, conference_only=False).set_index("Team").loc[selected]
     conference = conf_map.get(selected, "GLA West")
-    conf = standings(results, conference_only=True).set_index("Team").loc[selected]
+    conf = standings(results, conference_only=False).set_index("Team").loc[selected]
     k1, k2 = st.columns(2)
-    with k1: st.metric("Conference points", int(conf["Pts"]))
+    with k1: st.metric("Overall GLA points", int(conf["Pts"]))
     with k2: st.metric("Goal difference", f"{int(conf['GD']):+d}")
     k3, k4 = st.columns(2)
     with k3: st.metric("Goals for", int(conf["GF"]))

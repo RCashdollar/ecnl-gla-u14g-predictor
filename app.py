@@ -88,6 +88,18 @@ def load_teams() -> pd.DataFrame:
     return df.drop_duplicates("team").sort_values("team").reset_index(drop=True)
 
 
+def normalize_team_name(value: object) -> str:
+    """Normalize source-site team-name variants to the canonical teams.csv names."""
+    name = str(value).strip()
+    aliases = {
+        "WNY Flash Rochester G2012/13": "WNY Flash Rochester ECNL RL G2012/13",
+        "WNY Flash Erie G2012/13": "WNY Flash Erie ECNL RL G2012/13",
+        "WNY Flash Rochester": "WNY Flash Rochester ECNL RL G2012/13",
+        "WNY Flash Erie": "WNY Flash Erie ECNL RL G2012/13",
+    }
+    return aliases.get(name, name)
+
+
 def load_results() -> pd.DataFrame:
     cols = ["date", "conference", "home_team", "away_team", "home_goals", "away_goals", "status"]
     if not RESULTS_PATH.exists():
@@ -97,6 +109,8 @@ def load_results() -> pd.DataFrame:
         if c not in df.columns:
             df[c] = ""
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    for c in ["home_team", "away_team"]:
+        df[c] = df[c].map(normalize_team_name)
     for c in ["home_goals", "away_goals"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df["conference"] = df["conference"].astype(str).str.strip().map(
@@ -124,8 +138,8 @@ def load_schedule() -> pd.DataFrame:
     for c in cols:
         if c not in df.columns: df[c] = ""
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["home_team"] = df["home_team"].astype(str).str.strip()
-    df["away_team"] = df["away_team"].astype(str).str.strip()
+    df["home_team"] = df["home_team"].map(normalize_team_name)
+    df["away_team"] = df["away_team"].map(normalize_team_name)
     df = df[df["date"].notna() & df["home_team"].ne("") & df["away_team"].ne("")]
     df = df[df["date"] >= pd.Timestamp.now().normalize()]
     df["fixture_key"] = df.apply(lambda r: (r["date"], frozenset([r["home_team"], r["away_team"]])), axis=1)
@@ -148,8 +162,8 @@ def standings(matches: pd.DataFrame, conference_only: bool = False) -> pd.DataFr
         h, a = m["home_team"], m["away_team"]
         if h not in rows or a not in rows:
             continue
-        if conference_only and (conf_map.get(h) != conf_map.get(a) or conf_map.get(h) not in {"GLA East", "GLA West"}):
-            continue
+        # East/West are display groupings only. All completed GLA matches count
+        # for each participating team, including cross-conference fixtures.
         hg, ag = int(m["home_goals"]), int(m["away_goals"])
         for t, gf, ga in [(h, hg, ag), (a, ag, hg)]:
             rows[t]["P"] += 1; rows[t]["GF"] += gf; rows[t]["GA"] += ga
@@ -459,7 +473,7 @@ def projected_standings(conference: str) -> pd.DataFrame:
     return out
 
 if page == "Schedule":
-    st.caption("Fixtures are compiled from the public team schedules for the 12-team GLA cohort. Details not yet published are shown as TBD; verify changes with the club or league.")
+    st.caption("Each upcoming fixture includes the current model projection. Kickoff and venue should be verified with the league or clubs.")
     if schedule.empty:
         st.info("No upcoming fixtures are loaded. Add confirmed fixtures to upcoming_schedule.csv.")
     else:
@@ -478,9 +492,6 @@ if page == "Schedule":
                 with a: st.markdown(f"**{short_name(fx['home_team'])}**")
                 with b: st.markdown(f"<div style='text-align:center;font-size:1.45rem;font-weight:900;color:#b8f36b'>{round(pred['home_xg'])}–{round(pred['away_xg'])}</div>", unsafe_allow_html=True)
                 with c: st.markdown(f"**{short_name(fx['away_team'])}**")
-                venue = str(fx.get("venue", "")).strip()
-                kickoff = str(fx.get("kickoff", "")).strip()
-                st.caption(f"📍 {venue if venue and venue.lower() not in {'nan', 'tbd'} else 'Venue TBD'}")
                 st.caption(f"Expected goals {pred['home_xg']:.1f}–{pred['away_xg']:.1f} · Home {pred['home_win']:.0%} · Draw {pred['draw']:.0%} · Away {pred['away_win']:.0%}")
                 if st.button("View match analysis", key=f"schedule_report_{idx}", use_container_width=True):
                     show_matchup_report(fx["home_team"], fx["away_team"], pred)
@@ -552,7 +563,7 @@ elif page == "Insights":
     conference = conf_map.get(selected, "GLA West")
     conf = standings(results, conference_only=False).set_index("Team").loc[selected]
     k1, k2 = st.columns(2)
-    with k1: st.metric("Overall GLA points", int(conf["Pts"]))
+    with k1: st.metric("Overall points", int(conf["Pts"]))
     with k2: st.metric("Goal difference", f"{int(conf['GD']):+d}")
     k3, k4 = st.columns(2)
     with k3: st.metric("Goals for", int(conf["GF"]))

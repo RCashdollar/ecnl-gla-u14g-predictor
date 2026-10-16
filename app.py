@@ -13,7 +13,7 @@ TEAMS_PATH = APP_DIR / "teams.csv"
 SCHEDULE_PATH = APP_DIR / "upcoming_schedule.csv"
 
 st.set_page_config(
-    page_title="ECNL-RL GLA",
+    page_title="ECNL-RL GLA U14G",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -451,7 +451,7 @@ if "current_page" not in st.session_state:
 st.markdown("""
 <div class="hero">
   <div class="hero-kicker">2026–27 Season · Great Lakes Alliance</div>
-  <h1>⚽ ECNL-RL GLA</h1>
+  <h1>⚽ ECNL-RL GLA U14G</h1>
   <p>Schedules, match forecasts, and the race for a top-two finish.</p>
 </div>
 """, unsafe_allow_html=True)
@@ -674,4 +674,4 @@ elif page == "Insights":
     else: st.info("No completed matches for this team are in the current results ledger.")
 
 st.markdown("---")
-st.caption("ECNL-RL GLA · 2026–27 · Forecasts are estimates based on the available verified results.")
+st.caption("ECNL-RL GLA U14G · 2026–27 · Forecasts are estimates based on the available verified results.")

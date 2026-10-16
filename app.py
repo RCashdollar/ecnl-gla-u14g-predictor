@@ -422,7 +422,7 @@ else:
 
 # Expected-points table for the remaining schedule. It does not mutate official results.
 def projected_standings(conference: str) -> pd.DataFrame:
-    current = standings(results, conference_only=True)
+    current = standings(results, conference_only=False)
     current = current[current["Conference"] == conference].copy().set_index("Team")
     names = [t for t in team_names if conf_map.get(t) == conference]
     projected = []
@@ -431,7 +431,7 @@ def projected_standings(conference: str) -> pd.DataFrame:
         add_pts = add_gf = add_ga = 0.0
         for _, fx in schedule.iterrows():
             home, away = fx["home_team"], fx["away_team"]
-            if home not in conf_map or away not in conf_map or conf_map.get(home) != conference or conf_map.get(away) != conference:
+            if home not in conf_map or away not in conf_map or conference not in {conf_map.get(home), conf_map.get(away)}:
                 continue
             if team not in {home, away}:
                 continue
@@ -452,7 +452,7 @@ def projected_standings(conference: str) -> pd.DataFrame:
             "GF": float(row["GF"]) + add_gf,
             "GA": float(row["GA"]) + add_ga,
             "GD": float(row["GD"]) + add_gf - add_ga,
-            "Scheduled games modeled": sum(1 for _, fx in schedule.iterrows() if team in {fx["home_team"], fx["away_team"]} and conf_map.get(fx["home_team"]) == conference and conf_map.get(fx["away_team"]) == conference),
+            "Scheduled games modeled": sum(1 for _, fx in schedule.iterrows() if team in {fx["home_team"], fx["away_team"]} and conference in {conf_map.get(fx["home_team"]), conf_map.get(fx["away_team"])}),
         })
     out = pd.DataFrame(projected).sort_values(["Projected Pts", "GD", "Current Pts", "Team"], ascending=[False,False,False,True]).reset_index(drop=True)
     out.insert(0, "Rank", range(1, len(out)+1))
@@ -497,40 +497,50 @@ elif page == "Analysis":
         if st.button("Open full matchup analysis", type="primary", use_container_width=True): show_matchup_report(home, away, pred)
 
 elif page == "Standings":
-    view = st.segmented_control("Conference", options=["GLA West", "GLA East"], default="GLA West", key="standings_conference", width="stretch")
-    view = view or "GLA West"
-    current = standings(results, conference_only=True)
-    current = current[current["Conference"] == view].copy().reset_index(drop=True)
-    current.insert(0, "Rank", range(1, len(current)+1))
-    projected = projected_standings(view)
-    mode = st.radio("Table", ["Current", "Projected finish"], horizontal=True, key="standings_mode")
-    st.caption("East/West view retained for simplicity. Projected finish adds expected points from the upcoming same-conference fixtures currently loaded. Note: the official 2026–27 postseason document describes qualification divisions as North/South, so this East/West view is a predictor view—not an official qualification table.")
-    table = current if mode == "Current" else projected
-    # Compact HTML table keeps every requested core column visible on a phone without horizontal scrolling.
-    if mode == "Current":
-        display = table[["Rank", "Team", "Pts", "W", "L", "D", "GF", "GA", "GD"]].copy()
+    st.caption("East and West are shown separately below. Each table includes all completed conference matches for teams in that group, including cross-conference matches. Projected points add expected points from upcoming fixtures involving those teams.")
+
+    def render_standings_table(conference: str, projected_view: bool = False) -> None:
+        table = projected_standings(conference) if projected_view else standings(results, conference_only=False)
+        if not projected_view:
+            table = table[table["Conference"] == conference].copy().reset_index(drop=True)
+            table.insert(0, "Rank", range(1, len(table) + 1))
+        if table.empty:
+            st.info(f"No standings available for {conference} yet.")
+            return
+        if projected_view:
+            display = table[["Rank", "Team", "Projected Pts", "W", "L", "D", "GF", "GA", "GD"]].copy()
+            display["Projected Pts"] = display["Projected Pts"].map(lambda x: f"{x:.1f}")
+            for col in ["GF", "GA", "GD"]:
+                display[col] = display[col].map(lambda x: f"{x:+.1f}" if col == "GD" else f"{x:.1f}")
+        else:
+            display = table[["Rank", "Team", "Pts", "W", "L", "D", "GF", "GA", "GD"]].copy()
+            display["GD"] = display["GD"].map(lambda x: f"{int(x):+d}")
         display["Team"] = display["Team"].map(short_name)
-    else:
-        display = table[["Rank", "Team", "Projected Pts", "W", "L", "D", "GF", "GA", "GD"]].copy()
-        display["Team"] = display["Team"].map(short_name)
-        display["Projected Pts"] = display["Projected Pts"].map(lambda x: f"{x:.1f}")
-        for col in ["GF", "GA", "GD"]: display[col] = display[col].map(lambda x: f"{x:.1f}" if col != "GD" else f"{x:+.1f}")
-    if mode == "Current":
-        for col in ["GD"]: display[col] = display[col].map(lambda x: f"{int(x):+d}")
-    html = display.to_html(index=False, escape=True, classes="mobile-standings")
-    st.markdown(f"<div class='standings-wrap'>{html}</div>", unsafe_allow_html=True)
-    if not table.empty:
+        html = display.to_html(index=False, escape=True, classes="mobile-standings")
+        st.markdown(f"<div class='standings-wrap'>{html}</div>", unsafe_allow_html=True)
         leader = table.iloc[0]
         second = table.iloc[1] if len(table) > 1 else None
-        if mode == "Projected finish":
-            st.success(f"Projected East/West leaders: {short_name(leader['Team'])}" + (f" and {short_name(second['Team'])}" if second is not None else ""))
-        else:
-            st.info(f"Current East/West leaders: {short_name(leader['Team'])}" + (f" and {short_name(second['Team'])}" if second is not None else ""))
-    with st.expander("More standings details"):
-        detail = table.copy()
-        if "Team" in detail: detail["Team"] = detail["Team"].map(short_name)
-        st.dataframe(detail, use_container_width=True, hide_index=True)
-    st.caption("Current tables use completed same-conference games only. Projected points are expected values, not guaranteed outcomes. Only upcoming same-conference fixtures are used in the conference projection; cross-conference fixtures do not affect these tables.")
+        label = "Projected leaders" if projected_view else "Current leaders"
+        st.caption(f"{label}: {short_name(leader['Team'])}" + (f" · {short_name(second['Team'])}" if second is not None else ""))
+        with st.expander(f"More {conference.replace('GLA ', '')} details"):
+            detail = table.copy()
+            if "Team" in detail:
+                detail["Team"] = detail["Team"].map(short_name)
+            st.dataframe(detail, use_container_width=True, hide_index=True)
+
+    st.markdown("### Current standings")
+    st.markdown("#### GLA East")
+    render_standings_table("GLA East")
+    st.markdown("#### GLA West")
+    render_standings_table("GLA West")
+
+    st.markdown("### Projected standings")
+    st.markdown("#### GLA East")
+    render_standings_table("GLA East", projected_view=True)
+    st.markdown("#### GLA West")
+    render_standings_table("GLA West", projected_view=True)
+
+    st.caption("Current standings use completed results only. Projected points are estimates, not guaranteed outcomes. These are predictor standings grouped by the app's East/West labels, not official postseason qualification tables.")
 
 elif page == "Insights":
     selected = st.selectbox("Choose a team", team_names, format_func=short_name, key="insight_team")

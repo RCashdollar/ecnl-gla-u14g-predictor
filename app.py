@@ -504,7 +504,7 @@ elif page == "Standings":
     current.insert(0, "Rank", range(1, len(current)+1))
     projected = projected_standings(view)
     mode = st.radio("Table", ["Current", "Projected finish"], horizontal=True, key="standings_mode")
-    st.caption("Top two in each conference qualify for postseason. Projected finish adds expected points from the upcoming same-conference fixtures currently loaded.")
+    st.caption("East/West view retained for simplicity. Projected finish adds expected points from the upcoming same-conference fixtures currently loaded. Note: the official 2026–27 postseason document describes qualification divisions as North/South, so this East/West view is a predictor view—not an official qualification table.")
     table = current if mode == "Current" else projected
     # Compact HTML table keeps every requested core column visible on a phone without horizontal scrolling.
     if mode == "Current":
@@ -523,9 +523,9 @@ elif page == "Standings":
         leader = table.iloc[0]
         second = table.iloc[1] if len(table) > 1 else None
         if mode == "Projected finish":
-            st.success(f"Projected top two: {short_name(leader['Team'])}" + (f" and {short_name(second['Team'])}" if second is not None else ""))
+            st.success(f"Projected East/West leaders: {short_name(leader['Team'])}" + (f" and {short_name(second['Team'])}" if second is not None else ""))
         else:
-            st.info(f"Current top two: {short_name(leader['Team'])}" + (f" and {short_name(second['Team'])}" if second is not None else ""))
+            st.info(f"Current East/West leaders: {short_name(leader['Team'])}" + (f" and {short_name(second['Team'])}" if second is not None else ""))
     with st.expander("More standings details"):
         detail = table.copy()
         if "Team" in detail: detail["Team"] = detail["Team"].map(short_name)

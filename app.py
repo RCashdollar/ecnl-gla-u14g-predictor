@@ -437,25 +437,35 @@ else:
 
 # Expected-points table for the remaining schedule. It does not mutate official results.
 def projected_standings(conference: str) -> pd.DataFrame:
+    """Expected final totals = current results + probability-weighted remaining fixtures."""
     current = standings(results, conference_only=False)
     current = current[current["Conference"] == conference].copy().set_index("Team")
     names = [t for t in team_names if conf_map.get(t) == conference]
+    future_fixtures = schedule[schedule["date"] >= pd.Timestamp.now().normalize()]
     projected = []
     for team in names:
         row = current.loc[team] if team in current.index else pd.Series({"Pts":0,"W":0,"D":0,"L":0,"GF":0,"GA":0,"GD":0,"P":0})
-        add_pts = add_gf = add_ga = 0.0
-        for _, fx in schedule[schedule["date"] >= pd.Timestamp.now().normalize()].iterrows():
+        add_pts = add_w = add_d = add_l = add_gf = add_ga = 0.0
+        modeled_games = 0
+        for _, fx in future_fixtures.iterrows():
             home, away = fx["home_team"], fx["away_team"]
             if home not in conf_map or away not in conf_map or conference not in {conf_map.get(home), conf_map.get(away)}:
                 continue
             if team not in {home, away}:
                 continue
             pred = prediction(home, away)
+            modeled_games += 1
             if team == home:
+                add_w += pred["home_win"]
+                add_d += pred["draw"]
+                add_l += pred["away_win"]
                 add_pts += 3 * pred["home_win"] + pred["draw"]
                 add_gf += pred["home_xg"]
                 add_ga += pred["away_xg"]
             else:
+                add_w += pred["away_win"]
+                add_d += pred["draw"]
+                add_l += pred["home_win"]
                 add_pts += 3 * pred["away_win"] + pred["draw"]
                 add_gf += pred["away_xg"]
                 add_ga += pred["home_xg"]
@@ -463,13 +473,15 @@ def projected_standings(conference: str) -> pd.DataFrame:
             "Team": team,
             "Current Pts": float(row["Pts"]),
             "Projected Pts": float(row["Pts"]) + add_pts,
-            "W": int(row["W"]), "D": int(row["D"]), "L": int(row["L"]),
-            "GF": float(row["GF"]) + add_gf,
-            "GA": float(row["GA"]) + add_ga,
-            "GD": float(row["GD"]) + add_gf - add_ga,
-            "Scheduled games modeled": sum(1 for _, fx in schedule[schedule["date"] >= pd.Timestamp.now().normalize()].iterrows() if team in {fx["home_team"], fx["away_team"]} and conference in {conf_map.get(fx["home_team"]), conf_map.get(fx["away_team"])}),
+            "Projected W": float(row["W"]) + add_w,
+            "Projected D": float(row["D"]) + add_d,
+            "Projected L": float(row["L"]) + add_l,
+            "Projected GF": float(row["GF"]) + add_gf,
+            "Projected GA": float(row["GA"]) + add_ga,
+            "Projected GD": float(row["GD"]) + add_gf - add_ga,
+            "Scheduled games modeled": modeled_games,
         })
-    out = pd.DataFrame(projected).sort_values(["Projected Pts", "GD", "Current Pts", "Team"], ascending=[False,False,False,True]).reset_index(drop=True)
+    out = pd.DataFrame(projected).sort_values(["Projected Pts", "Projected GD", "Current Pts", "Team"], ascending=[False,False,False,True]).reset_index(drop=True)
     out.insert(0, "Rank", range(1, len(out)+1))
     return out
 
@@ -546,9 +558,10 @@ elif page == "Standings":
             st.info(f"No standings available for {conference} yet.")
             return
         if projected_view:
-            display = table[["Rank", "Team", "Projected Pts", "W", "L", "D", "GF", "GA", "GD"]].copy()
+            display = table[["Rank", "Team", "Projected Pts", "Projected W", "Projected L", "Projected D", "Projected GF", "Projected GA", "Projected GD"]].copy()
+            display = display.rename(columns={"Projected W":"W", "Projected L":"L", "Projected D":"D", "Projected GF":"GF", "Projected GA":"GA", "Projected GD":"GD"})
             display["Projected Pts"] = display["Projected Pts"].map(lambda x: f"{x:.1f}")
-            for col in ["GF", "GA", "GD"]:
+            for col in ["W", "L", "D", "GF", "GA", "GD"]:
                 display[col] = display[col].map(lambda x: f"{x:+.1f}" if col == "GD" else f"{x:.1f}")
         else:
             display = table[["Rank", "Team", "Pts", "W", "L", "D", "GF", "GA", "GD"]].copy()
@@ -578,7 +591,7 @@ elif page == "Standings":
     st.markdown("#### GLA West")
     render_standings_table("GLA West", projected_view=True)
 
-    st.caption("Current standings use completed results only. Projected points are estimates, not guaranteed outcomes. These are predictor standings grouped by the app's East/West labels, not official postseason qualification tables.")
+    st.caption("Projected W/D/L and GF/GA/GD combine completed results with probability-weighted estimates for remaining scheduled games. Decimal values are expected totals, not literal match counts or guaranteed outcomes. These are predictor standings grouped by the app's East/West labels, not official postseason qualification tables.")
 
 elif page == "Insights":
     selected = st.selectbox("Choose a team", team_names, format_func=short_name, key="insight_team")

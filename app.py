@@ -649,25 +649,41 @@ elif page == "Schedule":
                             st.caption("Confirmed result · Counts in current standings.")
 
 elif page == "What If":
-    st.markdown("Test hypothetical scores for upcoming games and see how they change the projected East and West tables. Your choices are temporary and do not change confirmed results or the schedule.")
+    st.markdown("Pick the winner (or a draw) for upcoming games. No scores to enter. Your choices only affect this what-if view and never change recorded results.")
     if schedule.empty:
         st.info("No upcoming fixtures are loaded to simulate.")
     else:
-        options = [f"{fx['date'].strftime('%b %d')} · {short_name(fx['home_team'])} vs {short_name(fx['away_team'])}" for _, fx in schedule.iterrows()]
-        chosen = st.multiselect("Choose upcoming games to change", options, max_selections=8, key="whatif_games", help="Select up to 8 games. Unselected games keep the model's current projection.")
+        options = [f"{fx['date'].strftime('%a, %b %d')} · {short_name(fx['home_team'])} vs {short_name(fx['away_team'])}" for _, fx in schedule.iterrows()]
+        chosen = st.multiselect("Choose games to change", options, max_selections=8, key="whatif_games", help="Select up to 8 upcoming games. Unselected games keep the model's current forecast.")
         index_by_label = {label: i for i, label in enumerate(options)}
         overrides = {}
         if chosen:
-            st.markdown("#### Set your hypothetical scores")
+            st.markdown("#### Pick each result")
             for label in chosen:
-                fx = schedule.iloc[index_by_label[label]]
+                ix = index_by_label[label]
+                fx = schedule.iloc[ix]
                 pred = prediction(fx["home_team"], fx["away_team"])
-                st.markdown(f"**{fx['date'].strftime('%b %d')} · {short_name(fx['home_team'])} vs {short_name(fx['away_team'])}**")
-                sc1, sc2 = st.columns(2)
-                with sc1: hg = st.selectbox(f"{short_name(fx['home_team'])} goals", list(range(7)), index=min(6, max(0, round(pred['home_xg']))), key=f"whatif_hg_{index_by_label[label]}")
-                with sc2: ag = st.selectbox(f"{short_name(fx['away_team'])} goals", list(range(7)), index=min(6, max(0, round(pred['away_xg']))), key=f"whatif_ag_{index_by_label[label]}")
-                overrides[index_by_label[label]] = (int(hg), int(ag))
-        def scenario_table(overrides_local: dict[int, tuple[int, int]]) -> pd.DataFrame:
+                if pred["home_win"] >= pred["away_win"] and pred["home_win"] >= pred["draw"]:
+                    default_outcome = "Home win"
+                elif pred["away_win"] >= pred["draw"]:
+                    default_outcome = "Away win"
+                else:
+                    default_outcome = "Draw"
+                with st.container(border=True):
+                    st.caption(f"{fx['date'].strftime('%b %d')} · {str(fx.get('kickoff', '')).strip() or 'Kickoff TBD'}")
+                    st.markdown(f"**{short_name(fx['home_team'])}**  vs  **{short_name(fx['away_team'])}**")
+                    outcome = st.radio(
+                        "Predicted result",
+                        ["Home win", "Draw", "Away win"],
+                        index=["Home win", "Draw", "Away win"].index(default_outcome),
+                        format_func=lambda value, h=short_name(fx['home_team']), a=short_name(fx['away_team']): {"Home win": f"{h} wins", "Draw": "Draw", "Away win": f"{a} wins"}[value],
+                        horizontal=True,
+                        key=f"whatif_outcome_{ix}",
+                        label_visibility="collapsed",
+                    )
+                    overrides[ix] = outcome
+
+        def scenario_table(overrides_local: dict[int, str]) -> pd.DataFrame:
             base = standings(results, conference_only=False).set_index("Team")
             rows = []
             for team in team_names:
@@ -678,17 +694,28 @@ elif page == "What If":
                     home, away = fx["home_team"], fx["away_team"]
                     if team not in (home, away):
                         continue
+                    pred = prediction(home, away)
                     if ix in overrides_local:
-                        xg_h, xg_a = overrides_local[ix]
-                        if xg_h > xg_a: hpts, apts, hw, ad, al = 3, 0, 1, 0, 1
-                        elif xg_h < xg_a: hpts, apts, hw, ad, al = 0, 3, 0, 0, 0
-                        else: hpts, apts, hw, ad, al = 1, 1, 0, 1, 0
-                        if team == home:
-                            pts += hpts; wins += hw; draws += (1 if xg_h == xg_a else 0); losses += (1 if xg_h < xg_a else 0); gf += xg_h; ga += xg_a
+                        outcome = overrides_local[ix]
+                        if outcome == "Draw":
+                            hpts = apts = 1
+                            hw = aw = 0
+                            hd = ad = 1
+                            hl = al = 0
+                        elif outcome == "Home win":
+                            hpts, apts = 3, 0
+                            hw, aw, hd, ad, hl, al = 1, 0, 0, 0, 0, 1
                         else:
-                            pts += apts; wins += (1 if xg_a > xg_h else 0); draws += (1 if xg_h == xg_a else 0); losses += (1 if xg_a < xg_h else 0); gf += xg_a; ga += xg_h
+                            hpts, apts = 0, 3
+                            hw, aw, hd, ad, hl, al = 0, 1, 0, 0, 1, 0
+                        # Winner-only scenarios do not invent goals; retain the model's expected goals.
+                        if team == home:
+                            pts += hpts; wins += hw; draws += hd; losses += hl
+                            gf += pred["home_xg"]; ga += pred["away_xg"]
+                        else:
+                            pts += apts; wins += aw; draws += ad; losses += al
+                            gf += pred["away_xg"]; ga += pred["home_xg"]
                     else:
-                        pred = prediction(home, away)
                         if team == home:
                             pts += 3*pred["home_win"] + pred["draw"]; wins += pred["home_win"]; draws += pred["draw"]; losses += pred["away_win"]; gf += pred["home_xg"]; ga += pred["away_xg"]
                         else:
@@ -697,14 +724,15 @@ elif page == "What If":
             out = pd.DataFrame(rows)
             out["Rank"] = out.groupby("Conference")["Projected Pts"].rank(method="first", ascending=False).astype(int)
             return out.sort_values(["Conference","Rank","Team"]).reset_index(drop=True)
+
         baseline = scenario_table({})
         scenario = scenario_table(overrides)
         if chosen:
-            st.markdown("#### Projected standings with your scenario")
-            st.caption("Unselected fixtures retain the model forecast. Selected fixtures use the exact scores you entered.")
+            st.markdown("#### Standings impact")
+            st.caption("Selected games use your chosen winner or draw. Other games keep the model forecast. Goal totals remain model estimates because no score was entered.")
         else:
-            st.markdown("#### Baseline projected standings")
-            st.caption("Choose games above to test alternate outcomes. The baseline uses the model for every remaining fixture.")
+            st.markdown("#### Projected standings")
+            st.caption("Choose one or more games above to see how different outcomes affect projected points and standings.")
         for conf in ["GLA East", "GLA West"]:
             st.markdown(f"##### {conf}")
             left = baseline[baseline["Conference"] == conf].copy()
@@ -716,12 +744,13 @@ elif page == "What If":
                 display[col] = display[col].map(lambda v: f"{v:+.1f}" if col == "Change" else f"{v:.1f}")
             st.dataframe(display.rename(columns={"Projected Pts baseline":"Baseline pts","Projected Pts scenario":"Scenario pts"}), use_container_width=True, hide_index=True)
         if chosen:
-            st.markdown("#### Scenario scores")
+            st.markdown("#### Your scenario")
             for label in chosen:
-                ix = index_by_label[label]; fx = schedule.iloc[ix]; hg, ag = overrides[ix]
-                outcome = "Home win" if hg > ag else "Away win" if hg < ag else "Draw"
-                st.write(f"**{fx['date'].strftime('%b %d')} — {short_name(fx['home_team'])} {hg}–{ag} {short_name(fx['away_team'])}:** {outcome}")
-        st.caption("This is a what-if exercise, not a change to recorded results. Projections are estimates; standings are grouped by East/West labels and include cross-conference games for each team's record.")
+                ix = index_by_label[label]; fx = schedule.iloc[ix]
+                outcome = overrides[ix]
+                outcome_text = {"Home win": f"{short_name(fx['home_team'])} wins", "Draw": "Draw", "Away win": f"{short_name(fx['away_team'])} wins"}[outcome]
+                st.write(f"**{fx['date'].strftime('%b %d')} — {outcome_text}**")
+        st.caption("What-if choices are temporary and do not change recorded scores or the schedule. East/West are predictor groupings; standings include cross-conference games.")
 
 elif page == "Analysis":
     c1, c2 = st.columns(2)

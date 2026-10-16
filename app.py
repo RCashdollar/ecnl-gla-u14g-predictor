@@ -649,19 +649,35 @@ elif page == "Schedule":
                             st.caption("Confirmed result · Counts in current standings.")
 
 elif page == "What If":
-    st.markdown("Pick the winner (or a draw) for upcoming games. No scores to enter. Your choices only affect this what-if view and never change recorded results.")
+    st.markdown("Pick a time period, then tap the winner or draw for each game. No scores to enter.")
     if schedule.empty:
         st.info("No upcoming fixtures are loaded to simulate.")
     else:
-        options = [f"{fx['date'].strftime('%a, %b %d')} · {short_name(fx['home_team'])} vs {short_name(fx['away_team'])}" for _, fx in schedule.iterrows()]
-        chosen = st.multiselect("Choose games to change", options, max_selections=8, key="whatif_games", help="Select up to 8 upcoming games. Unselected games keep the model's current forecast.")
-        index_by_label = {label: i for i, label in enumerate(options)}
+        st.markdown("Choose a time period. Games will appear below; tap one result for each game you want to change.")
+        period = st.radio(
+            "Show games",
+            ["Next 7 days", "Next 30 days", "Rest of 2026", "All upcoming games"],
+            index=0,
+            key="whatif_period_v2",
+            label_visibility="collapsed",
+            vertical=True,
+        )
+        today = pd.Timestamp.now().normalize()
+        if period == "Next 7 days":
+            visible_schedule = schedule[(schedule["date"] >= today) & (schedule["date"] < today + pd.Timedelta(days=7))]
+        elif period == "Next 30 days":
+            visible_schedule = schedule[(schedule["date"] >= today) & (schedule["date"] < today + pd.Timedelta(days=30))]
+        elif period == "Rest of 2026":
+            visible_schedule = schedule[(schedule["date"] >= today) & (schedule["date"] <= pd.Timestamp("2026-12-31"))]
+        else:
+            visible_schedule = schedule.copy()
+
         overrides = {}
-        if chosen:
-            st.markdown("#### Pick each result")
-            for label in chosen:
-                ix = index_by_label[label]
-                fx = schedule.iloc[ix]
+        if visible_schedule.empty:
+            st.info("No upcoming games found in this period. Choose another period to see more fixtures.")
+        else:
+            st.caption(f"{len(visible_schedule)} game{'s' if len(visible_schedule) != 1 else ''}")
+            for ix, fx in visible_schedule.iterrows():
                 pred = prediction(fx["home_team"], fx["away_team"])
                 if pred["home_win"] >= pred["away_win"] and pred["home_win"] >= pred["draw"]:
                     default_outcome = "Home win"
@@ -669,16 +685,17 @@ elif page == "What If":
                     default_outcome = "Away win"
                 else:
                     default_outcome = "Draw"
+                kickoff = str(fx.get("kickoff", "")).strip() or "Kickoff TBD"
                 with st.container(border=True):
-                    st.caption(f"{fx['date'].strftime('%b %d')} · {str(fx.get('kickoff', '')).strip() or 'Kickoff TBD'}")
+                    st.caption(f"{fx['date'].strftime('%a, %b %d')} · {kickoff}")
                     st.markdown(f"**{short_name(fx['home_team'])}**  vs  **{short_name(fx['away_team'])}**")
                     outcome = st.radio(
-                        "Predicted result",
+                        "Choose result",
                         ["Home win", "Draw", "Away win"],
                         index=["Home win", "Draw", "Away win"].index(default_outcome),
                         format_func=lambda value, h=short_name(fx['home_team']), a=short_name(fx['away_team']): {"Home win": f"{h} wins", "Draw": "Draw", "Away win": f"{a} wins"}[value],
-                        horizontal=True,
-                        key=f"whatif_outcome_{ix}",
+                        key=f"whatif_outcome_v2_{ix}",
+                        horizontal=False,
                         label_visibility="collapsed",
                     )
                     overrides[ix] = outcome
@@ -727,7 +744,7 @@ elif page == "What If":
 
         baseline = scenario_table({})
         scenario = scenario_table(overrides)
-        if chosen:
+        if overrides:
             st.markdown("#### Standings impact")
             st.caption("Selected games use your chosen winner or draw. Other games keep the model forecast. Goal totals remain model estimates because no score was entered.")
         else:
@@ -743,14 +760,13 @@ elif page == "What If":
             for col in ["Projected Pts baseline","Projected Pts scenario","Change"]:
                 display[col] = display[col].map(lambda v: f"{v:+.1f}" if col == "Change" else f"{v:.1f}")
             st.dataframe(display.rename(columns={"Projected Pts baseline":"Baseline pts","Projected Pts scenario":"Scenario pts"}), use_container_width=True, hide_index=True)
-        if chosen:
-            st.markdown("#### Your scenario")
-            for label in chosen:
-                ix = index_by_label[label]; fx = schedule.iloc[ix]
-                outcome = overrides[ix]
+        if overrides:
+            st.markdown("#### Your selected outcomes")
+            for ix, outcome in overrides.items():
+                fx = schedule.loc[ix]
                 outcome_text = {"Home win": f"{short_name(fx['home_team'])} wins", "Draw": "Draw", "Away win": f"{short_name(fx['away_team'])} wins"}[outcome]
-                st.write(f"**{fx['date'].strftime('%b %d')} — {outcome_text}**")
-        st.caption("What-if choices are temporary and do not change recorded scores or the schedule. East/West are predictor groupings; standings include cross-conference games.")
+                st.write(f"{fx['date'].strftime('%b %d')} · {short_name(fx['home_team'])} vs {short_name(fx['away_team'])} — **{outcome_text}**")
+        st.caption("Choices are temporary. They do not change recorded scores or the schedule. East/West are predictor groupings; standings include cross-conference games.")
 
 elif page == "Analysis":
     c1, c2 = st.columns(2)

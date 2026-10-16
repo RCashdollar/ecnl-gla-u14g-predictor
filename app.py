@@ -314,33 +314,35 @@ def show_matchup_report(home: str, away: str, forecast: dict) -> None:
 
     st.markdown("### 🚨 Bottom line up front")
     st.markdown(
-        f"- **{favored} has the edge:** the model projects **{forecast['home_xg']:.1f}–{forecast['away_xg']:.1f}** expected goals, "
-        f"a **{abs(margin):.1f}-goal** advantage. A **{round(forecast['home_xg'])}–{round(forecast['away_xg'])}** type of result is plausible, but not guaranteed."
+        f"- **{favored} has the edge:** projected expected goals are **{forecast['home_xg']:.1f}–{forecast['away_xg']:.1f}**; "
+        f"a **{abs(margin):.1f}-goal** gap. A **{round(forecast['home_xg'])}–{round(forecast['away_xg'])}** result is plausible, not guaranteed."
     )
     st.markdown(
-        f"- **Why the matchup looks { 'close' if abs(margin) < 0.8 else 'less even' }:** {home_label} averages **{home_stats['gf_pg']:.1f} scored / {home_stats['ga_pg']:.1f} conceded** per match; "
-        f"{away_label} averages **{away_stats['gf_pg']:.1f} scored / {away_stats['ga_pg']:.1f} conceded**."
+        f"- **Form & odds:** {home_label} **{home_stats['form']}** ({home_stats['gf_pg']:.1f} scored / {home_stats['ga_pg']:.1f} conceded per match); "
+        f"{away_label} **{away_stats['form']}** ({away_stats['gf_pg']:.1f} / {away_stats['ga_pg']:.1f}). "
+        f"Model probabilities: **{ph:.0%} home · {pd_:.0%} draw · {pa:.0%} away**; based on {home_stats['played']} and {away_stats['played']} completed games."
     )
-    st.markdown(
-        f"- **Recent form:** {home_label} **{home_stats['form']}**; {away_label} **{away_stats['form']}**. "
-        f"The sample is {home_stats['played']} completed matches for {home_label} and {away_stats['played']} for {away_label}."
-    )
-    st.markdown(
-        f"- **Win probabilities:** **{ph:.0%} home · {pd_:.0%} draw · {pa:.0%} away**. "
-        f"These are model estimates based on recorded results, not guarantees."
-    )
-    # Low scoring is a practical signal to investigate chance creation and ball movement, not proof of a specific passing problem.
-    if home_stats['gf_pg'] <= 1.7 and home_stats['ga_pg'] <= 1.5:
-        blunt = f"**Blunt takeaway for {home_label}:** the defense is keeping games manageable, but scoring only {home_stats['gf_pg']:.1f} per match puts too much pressure on the back line. The defense can't carry the attack; {home_label} needs better ball movement, connected passing through midfield, and higher-quality chances—not hopeful balls forward."
-    elif away_stats['gf_pg'] <= 1.7 and away_stats['ga_pg'] <= 1.5:
-        blunt = f"**Blunt takeaway for {away_label}:** the defense is keeping games manageable, but scoring only {away_stats['gf_pg']:.1f} per match puts too much pressure on the back line. The defense can't carry the attack; {away_label} needs better ball movement, connected passing through midfield, and higher-quality chances—not hopeful balls forward."
-    elif home_stats['gf_pg'] <= 1.7:
-        blunt = f"**Blunt takeaway for {home_label}:** the attack is the concern at {home_stats['gf_pg']:.1f} goals per match. The defense can keep you in it, but it can't carry the team; Elite needs better ball movement, connected passing through midfield, and higher-quality chances—not hopeful balls forward."
-    elif away_stats['gf_pg'] <= 1.7:
-        blunt = f"**Blunt takeaway for {away_label}:** the attack is the concern at {away_stats['gf_pg']:.1f} goals per match. The defense can keep you in it, but it can't carry the team; {away_label} needs better ball movement, connected passing through midfield, and higher-quality chances—not hopeful balls forward."
-    else:
-        blunt = f"**Blunt takeaway:** the scoring numbers suggest both teams can threaten. Avoid giving away cheap chances and make the most of attacking opportunities."
-    st.markdown(f"- {blunt}")
+
+    st.markdown("### Blunt takeaways")
+    def blunt_takeaway(label: str, stats: dict) -> str:
+        gf, ga = stats['gf_pg'], stats['ga_pg']
+        if gf <= 1.7 and ga <= 1.5:
+            return (f"**{label}:** The defense is keeping games manageable, but {gf:.1f} goals scored per match puts too much pressure on the back line. "
+                    "The defense can't carry the attack—improve ball movement, connect passes through midfield, and create better chances instead of relying on hopeful balls forward.")
+        if gf <= 1.7:
+            return (f"**{label}:** The attack is the concern at {gf:.1f} goals per match. Move the ball quicker, connect passes through midfield, and create higher-quality chances; "
+                    "the defense can't carry the team every game.")
+        if ga >= 2.5:
+            return (f"**{label}:** Conceding {ga:.1f} goals per match is making life difficult. Tighten defensive shape, protect the middle, and cut out cheap chances; "
+                    "scoring well won't always cover defensive leaks.")
+        if gf >= 2.5 and ga <= 1.5:
+            return (f"**{label}:** The numbers show a strong balance—{gf:.1f} scored and {ga:.1f} conceded per match. Keep the defensive discipline and attack with purpose; don't give away easy transition chances.")
+        if gf >= 2.5:
+            return (f"**{label}:** The attack is productive at {gf:.1f} goals per match, but {ga:.1f} conceded suggests there's room to be harder to play against. Keep creating chances while improving defensive control.")
+        return (f"**{label}:** The numbers are fairly balanced ({gf:.1f} scored / {ga:.1f} conceded per match). The next step is to turn possession into clearer chances and avoid preventable goals.")
+
+    st.markdown(f"- {blunt_takeaway(home_label, home_stats)}")
+    st.markdown(f"- {blunt_takeaway(away_label, away_stats)}")
 
     st.markdown("### Why the matchup looks close" if abs(margin) < 0.8 else "### Why one team has the edge")
     reasons = []

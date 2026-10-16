@@ -456,6 +456,13 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# One-tap access to Elite FC's live YouTube channel.
+st.link_button(
+    "🔴 Watch Elite FC Live on YouTube",
+    "https://www.youtube.com/@cashdollar_elitefc/live",
+    use_container_width=True,
+)
+
 completed = len(results)
 latest_date = results["date"].max().strftime("%b %d, %Y") if completed and pd.notna(results["date"].max()) else "No results yet"
 east_count = int((teams["conference"].str.contains("East", case=False)).sum()) if not teams.empty else 0

@@ -503,21 +503,23 @@ if page != "Home":
     st.markdown(f"<div class='section-title'>{page}</div>", unsafe_allow_html=True)
 else:
     st.markdown("### What would you like to explore?")
-    tile_cols = st.columns(2)
     tiles = [
-        ("🗓️", "Season Calendar", "Games, results, venues, and projections", "Schedule"),
+        ("📅", "Upcoming Games", "Next fixtures, kickoff, venue, and projections", "Upcoming"),
+        ("🗓️", "Season Calendar", "Browse results and fixtures by month", "Schedule"),
         ("⚽", "Match Analysis", "Compare any two teams", "Analysis"),
         ("🏆", "Standings", "Current table and projected finish", "Standings"),
         ("📈", "Team Insights", "Recent form and team performance", "Insights"),
         ("🧪", "What If? Simulator", "Test hypothetical scores and standings", "What If"),
     ]
-    for col, (emoji, title, desc, destination) in zip([tile_cols[0], tile_cols[1], tile_cols[0], tile_cols[1]], tiles):
-        with col:
-            with st.container(border=True):
-                st.markdown(f"<div style='font-size:1.7rem'>{emoji}</div><div style='font-weight:800;font-size:1.03rem'>{title}</div><div style='font-size:.82rem;color:#aab4c4;min-height:2.5rem'>{desc}</div>", unsafe_allow_html=True)
-                if st.button(f"Open {title} →", key=f"tile_{destination}", use_container_width=True):
-                    go(destination)
-                    st.rerun()
+    for start in range(0, len(tiles), 2):
+        tile_cols = st.columns(2)
+        for col, (emoji, title, desc, destination) in zip(tile_cols, tiles[start:start+2]):
+            with col:
+                with st.container(border=True):
+                    st.markdown(f"<div style='font-size:1.7rem'>{emoji}</div><div style='font-weight:800;font-size:1.03rem'>{title}</div><div style='font-size:.82rem;color:#aab4c4;min-height:2.5rem'>{desc}</div>", unsafe_allow_html=True)
+                    if st.button(f"Open {title} →", key=f"tile_{destination}", use_container_width=True):
+                        go(destination)
+                        st.rerun()
     st.caption(f"{len(team_names)} teams · {completed} completed matches · {len(schedule)} upcoming fixtures")
 
 # Expected-points table for the remaining schedule. It does not mutate official results.
@@ -567,18 +569,41 @@ def projected_standings(conference: str) -> pd.DataFrame:
     out.insert(0, "Rank", range(1, len(out)+1))
     return out
 
-if page == "Schedule":
-    st.caption("Browse the season by month. Completed matches show confirmed scores; future matches show model projections. Verify kickoff and venue with the league or clubs.")
-    # Combine confirmed results and future fixtures for the calendar without changing either CSV.
+if page == "Upcoming":
+    st.caption("Your quick game-day view. Upcoming fixtures are shown as easy-to-scan cards, with projected scores and available venue details.")
+    if schedule.empty:
+        st.info("No upcoming fixtures are loaded yet.")
+    else:
+        team_filter = st.selectbox("Team", ["All teams"] + team_names, index=1 if "Elite FC ECNL RL G2012/13" in team_names else 0, format_func=lambda t: "All teams" if t == "All teams" else short_name(t), key="upcoming_team_filter")
+        if team_filter == "All teams":
+            upcoming_view = schedule.copy()
+        else:
+            upcoming_view = schedule[(schedule["home_team"] == team_filter) | (schedule["away_team"] == team_filter)].copy()
+        upcoming_view = upcoming_view.sort_values(["date", "kickoff"])
+        st.caption(f"{len(upcoming_view)} upcoming fixture{'s' if len(upcoming_view) != 1 else ''}")
+        for idx, (_, fx) in enumerate(upcoming_view.iterrows()):
+            pred = prediction(fx["home_team"], fx["away_team"])
+            date_text = fx["date"].strftime("%a, %b %d, %Y")
+            with st.container(border=True):
+                st.caption(date_text + (f" · {fx['kickoff']}" if str(fx.get("kickoff", "")).strip() else " · Time TBD"))
+                st.markdown(f"**{short_name(fx['home_team'])}**  vs  **{short_name(fx['away_team'])}**")
+                score_col, prob_col = st.columns([1, 2])
+                with score_col:
+                    st.markdown(f"<div style='font-size:1.55rem;font-weight:900;color:#b8f36b'>{round(pred['home_xg'])}–{round(pred['away_xg'])}</div><div style='font-size:.75rem;color:#aab4c4'>Projected score</div>", unsafe_allow_html=True)
+                with prob_col:
+                    st.caption(f"Home {pred['home_win']:.0%} · Draw {pred['draw']:.0%} · Away {pred['away_win']:.0%}")
+                st.caption(str(fx.get("venue", "")).strip() or "Venue TBD")
+                if st.button("View match analysis", key=f"upcoming_report_{idx}", use_container_width=True):
+                    show_matchup_report(fx["home_team"], fx["away_team"], pred)
+
+elif page == "Schedule":
+    st.caption("A mobile-friendly season agenda: pick a month, then scan full-width match cards. No cramped seven-column calendar grid.")
     calendar_rows = []
     for _, m in results.iterrows():
-        calendar_rows.append({"date": m["date"], "home_team": m["home_team"], "away_team": m["away_team"],
-                              "kickoff": "", "venue": "", "kind": "Final", "score": f"{int(m['home_goals'])}–{int(m['away_goals'])}"})
+        calendar_rows.append({"date": m["date"], "home_team": m["home_team"], "away_team": m["away_team"], "kickoff": "", "venue": "", "kind": "Final", "score": f"{int(m['home_goals'])}–{int(m['away_goals'])}", "pred": None})
     for _, fx in schedule.iterrows():
         pred = prediction(fx["home_team"], fx["away_team"])
-        calendar_rows.append({"date": fx["date"], "home_team": fx["home_team"], "away_team": fx["away_team"],
-                              "kickoff": str(fx["kickoff"]).strip(), "venue": str(fx["venue"]).strip(), "kind": "Upcoming",
-                              "score": f"{round(pred['home_xg'])}–{round(pred['away_xg'])}", "pred": pred})
+        calendar_rows.append({"date": fx["date"], "home_team": fx["home_team"], "away_team": fx["away_team"], "kickoff": str(fx.get("kickoff", "")).strip(), "venue": str(fx.get("venue", "")).strip(), "kind": "Upcoming", "score": f"{round(pred['home_xg'])}–{round(pred['away_xg'])}", "pred": pred})
     cal_df = pd.DataFrame(calendar_rows)
     if cal_df.empty:
         st.info("No results or fixtures are loaded yet.")
@@ -586,47 +611,40 @@ if page == "Schedule":
         months = sorted(cal_df["date"].dropna().dt.to_period("M").unique())
         current_period = pd.Timestamp.now().to_period("M")
         default_month = months.index(current_period) if current_period in months else max(0, len(months)-1)
-        month_choice = st.selectbox("Calendar month", months, index=default_month, format_func=lambda x: x.strftime("%B %Y"), key="calendar_month")
+        month_choice = st.selectbox("Month", months, index=default_month, format_func=lambda x: x.strftime("%B %Y"), key="calendar_month_agenda")
+        status_filter = st.segmented_control("Show", options=["All games", "Upcoming", "Results"], default="All games", key="calendar_status_filter") if hasattr(st, "segmented_control") else st.radio("Show", ["All games", "Upcoming", "Results"], horizontal=True, key="calendar_status_filter_radio")
         month_df = cal_df[cal_df["date"].dt.to_period("M") == month_choice].copy()
-        # Calendar grid, with concise event labels that remain readable on mobile.
-        weeks = pycalendar.monthcalendar(month_choice.year, month_choice.month)
-        st.markdown("#### Month view")
-        day_headers = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        header_cols = st.columns(7)
-        for col, day in zip(header_cols, day_headers):
-            col.markdown(f"<div style='text-align:center;font-size:.72rem;color:#aab4c4;font-weight:800'>{day}</div>", unsafe_allow_html=True)
-        for week in weeks:
-            cols = st.columns(7)
-            for col, day in zip(cols, week):
-                if day == 0:
-                    col.markdown("<div style='min-height:58px;border:1px solid #303a49;border-radius:6px;opacity:.25'></div>", unsafe_allow_html=True)
-                    continue
-                day_games = month_df[month_df["date"].dt.day == day]
-                labels = []
-                for _, g in day_games.head(3).iterrows():
-                    labels.append(f"<div style='font-size:.63rem;line-height:1.15;margin-top:3px;color:{'#b8f36b' if g['kind']=='Final' else '#8fc5ff'}'>{'✓ ' if g['kind']=='Final' else '• '}{short_name(g['home_team'])[:9]}<br>{short_name(g['away_team'])[:9]}<br><b>{g['score']}</b></div>")
-                extra = f"<div style='font-size:.6rem;color:#aab4c4'>+{len(day_games)-3} more</div>" if len(day_games) > 3 else ""
-                col.markdown(f"<div style='min-height:58px;padding:3px;border:1px solid #303a49;border-radius:6px;background:#171d27'><b style='font-size:.75rem'>{day}</b>{''.join(labels)}{extra}</div>", unsafe_allow_html=True)
-        st.markdown("#### Games this month")
+        if status_filter == "Upcoming": month_df = month_df[month_df["kind"] == "Upcoming"]
+        elif status_filter == "Results": month_df = month_df[month_df["kind"] == "Final"]
+        team_filter = st.selectbox("Team filter", ["All teams"] + team_names, index=1 if "Elite FC ECNL RL G2012/13" in team_names else 0, format_func=lambda t: "All teams" if t == "All teams" else short_name(t), key="calendar_team_filter")
+        if team_filter != "All teams":
+            month_df = month_df[(month_df["home_team"] == team_filter) | (month_df["away_team"] == team_filter)]
+        month_df = month_df.sort_values(["date", "kickoff"])
+        st.caption(f"{len(month_df)} game{'s' if len(month_df) != 1 else ''} · Final scores are confirmed; upcoming scores are model projections.")
         if month_df.empty:
-            st.info("No matches are listed for this month.")
-        else:
-            for idx, (_, g) in enumerate(month_df.sort_values(["date", "kickoff"]).iterrows()):
-                with st.container(border=True):
-                    date_text = g["date"].strftime("%a, %b %d, %Y")
-                    status_text = "FINAL" if g["kind"] == "Final" else "PROJECTED"
-                    st.caption(f"{date_text} · {status_text}" + (f" · {g['kickoff']}" if g.get("kickoff") else ""))
-                    a, b, c = st.columns([4, 2, 4])
-                    with a: st.markdown(f"**{short_name(g['home_team'])}**")
-                    with b: st.markdown(f"<div style='text-align:center;font-size:1.35rem;font-weight:900;color:#b8f36b'>{g['score']}</div>", unsafe_allow_html=True)
-                    with c: st.markdown(f"**{short_name(g['away_team'])}**")
-                    if g["kind"] == "Upcoming":
-                        venue = g.get("venue", "") or "Venue TBD"
-                        st.caption(f"{venue} · Expected goals {g['pred']['home_xg']:.1f}–{g['pred']['away_xg']:.1f} · Home {g['pred']['home_win']:.0%} / Draw {g['pred']['draw']:.0%} / Away {g['pred']['away_win']:.0%}")
-                        if st.button("View match analysis", key=f"calendar_report_{idx}", use_container_width=True):
-                            show_matchup_report(g["home_team"], g["away_team"], g["pred"])
-                    else:
-                        st.caption("Confirmed result · This score counts in current standings.")
+            st.info("No games match these filters for this month.")
+        for idx, (_, g) in enumerate(month_df.iterrows()):
+            with st.container(border=True):
+                date_text = g["date"].strftime("%A, %b %d")
+                if g["kind"] == "Final":
+                    st.caption(f"{date_text} · FINAL")
+                    score_color = "#b8f36b"
+                else:
+                    kickoff = g.get("kickoff", "") or "Time TBD"
+                    st.caption(f"{date_text} · {kickoff} · UPCOMING")
+                    score_color = "#8fc5ff"
+                c1, c2, c3 = st.columns([4, 2, 4])
+                with c1: st.markdown(f"**{short_name(g['home_team'])}**")
+                with c2: st.markdown(f"<div style='text-align:center;font-size:1.35rem;font-weight:900;color:{score_color}'>{g['score']}</div>", unsafe_allow_html=True)
+                with c3: st.markdown(f"**{short_name(g['away_team'])}**")
+                if g["kind"] == "Upcoming":
+                    st.caption(str(g.get("venue", "")).strip() or "Venue TBD")
+                    pred = g["pred"]
+                    st.caption(f"Win probabilities · Home {pred['home_win']:.0%} / Draw {pred['draw']:.0%} / Away {pred['away_win']:.0%}")
+                    if st.button("View match analysis", key=f"calendar_report_{idx}", use_container_width=True):
+                        show_matchup_report(g["home_team"], g["away_team"], pred)
+                else:
+                    st.caption("Confirmed result · Counts in current standings.")
 
 elif page == "What If":
     st.markdown("Test hypothetical scores for upcoming games and see how they change the projected East and West tables. Your choices are temporary and do not change confirmed results or the schedule.")

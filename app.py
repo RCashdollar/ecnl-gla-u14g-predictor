@@ -319,7 +319,7 @@ def show_matchup_report(home: str, away: str, forecast: dict) -> None:
     )
     st.markdown(
         f"- **Why the matchup looks { 'close' if abs(margin) < 0.8 else 'less even' }:** {home_label} averages **{home_stats['gf_pg']:.1f} scored / {home_stats['ga_pg']:.1f} conceded** per match; "
-        f"{away} averages **{away_stats['gf_pg']:.1f} scored / {away_stats['ga_pg']:.1f} conceded**."
+        f"{away_label} averages **{away_stats['gf_pg']:.1f} scored / {away_stats['ga_pg']:.1f} conceded**."
     )
     st.markdown(
         f"- **Recent form:** {home_label} **{home_stats['form']}**; {away_label} **{away_stats['form']}**. "
@@ -329,19 +329,18 @@ def show_matchup_report(home: str, away: str, forecast: dict) -> None:
         f"- **Win probabilities:** **{ph:.0%} home · {pd_:.0%} draw · {pa:.0%} away**. "
         f"These are model estimates based on recorded results, not guarantees."
     )
-    # Blunt, data-grounded coaching takeaway. Do not infer passing style from score data alone.
+    # Low scoring is a practical signal to investigate chance creation and ball movement, not proof of a specific passing problem.
     if home_stats['gf_pg'] <= 1.7 and home_stats['ga_pg'] <= 1.5:
-        blunt = f"**Blunt takeaway for {home_label}:** the defense is keeping games manageable, but scoring only {home_stats['gf_pg']:.1f} per match puts too much pressure on the back line. The defense can't carry the attack; Elite needs to create better chances and finish them."
+        blunt = f"**Blunt takeaway for {home_label}:** the defense is keeping games manageable, but scoring only {home_stats['gf_pg']:.1f} per match puts too much pressure on the back line. The defense can't carry the attack; {home_label} needs better ball movement, connected passing through midfield, and higher-quality chances—not hopeful balls forward."
     elif away_stats['gf_pg'] <= 1.7 and away_stats['ga_pg'] <= 1.5:
-        blunt = f"**Blunt takeaway for {away_label}:** the defense is keeping games manageable, but scoring only {away_stats['gf_pg']:.1f} per match puts too much pressure on the back line. The defense can't carry the attack; {away_label} needs to create better chances and finish them."
+        blunt = f"**Blunt takeaway for {away_label}:** the defense is keeping games manageable, but scoring only {away_stats['gf_pg']:.1f} per match puts too much pressure on the back line. The defense can't carry the attack; {away_label} needs better ball movement, connected passing through midfield, and higher-quality chances—not hopeful balls forward."
     elif home_stats['gf_pg'] <= 1.7:
-        blunt = f"**Blunt takeaway for {home_label}:** the attack is the concern at {home_stats['gf_pg']:.1f} goals per match. The defense can keep you in it, but it can't carry the team; Elite needs to create and finish more chances."
+        blunt = f"**Blunt takeaway for {home_label}:** the attack is the concern at {home_stats['gf_pg']:.1f} goals per match. The defense can keep you in it, but it can't carry the team; Elite needs better ball movement, connected passing through midfield, and higher-quality chances—not hopeful balls forward."
     elif away_stats['gf_pg'] <= 1.7:
-        blunt = f"**Blunt takeaway for {away_label}:** the attack is the concern at {away_stats['gf_pg']:.1f} goals per match. The defense can keep you in it, but it can't carry the team; {away_label} needs to create and finish more chances."
+        blunt = f"**Blunt takeaway for {away_label}:** the attack is the concern at {away_stats['gf_pg']:.1f} goals per match. The defense can keep you in it, but it can't carry the team; {away_label} needs better ball movement, connected passing through midfield, and higher-quality chances—not hopeful balls forward."
     else:
         blunt = f"**Blunt takeaway:** the scoring numbers suggest both teams can threaten. Avoid giving away cheap chances and make the most of attacking opportunities."
     st.markdown(f"- {blunt}")
-    st.caption("Passing quality and playing style aren't measured in this dataset, so the report won't label a team as playing kickball without video or passing data.")
 
     st.markdown("### Why the matchup looks close" if abs(margin) < 0.8 else "### Why one team has the edge")
     reasons = []

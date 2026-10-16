@@ -45,13 +45,20 @@ div[data-testid="stMetric"] {background:var(--panel);border:1px solid #303a49;pa
 div[data-testid="stMetricLabel"] p {color:var(--muted)!important;}
 .stTabs [data-baseweb="tab-list"] {gap:.3rem;}
 .stTabs [data-baseweb="tab"] {height:auto;padding:.7rem .9rem;border-radius:10px 10px 0 0;}
-.stButton>button {border-radius:10px;font-weight:700;}
+.stButton>button {border-radius:10px;font-weight:700;min-height:2.8rem;white-space:normal;}
+[data-testid="stDataFrame"] {max-width:100%;}
 @media (max-width:640px) {
  .block-container {padding-left:.75rem;padding-right:.75rem;padding-top:.65rem;}
  .hero {padding:1rem;border-radius:15px;}
  .metric-card {padding:.8rem;}
  .metric-value {font-size:1.45rem;}
- .stTabs [data-baseweb="tab"] {padding:.55rem .58rem;font-size:.85rem;}
+ .stTabs [data-baseweb="tab-list"] {display:flex;overflow-x:auto;flex-wrap:nowrap;scrollbar-width:thin;}
+ .stTabs [data-baseweb="tab"] {padding:.55rem .58rem;font-size:.8rem;flex:0 0 auto;}
+ .pred-card {padding:.7rem .4rem;border-radius:13px;}
+ .pred-team {font-size:.78rem;line-height:1.25;}
+ .pred-score {font-size:1.8rem;}
+ div[data-testid="stMetric"] {padding:.65rem .7rem;}
+ div[data-testid="stMetricValue"] {font-size:1.25rem;}
 }
 </style>
 """, unsafe_allow_html=True)
@@ -166,48 +173,59 @@ def team_form(team: str, limit: int = 5) -> list[str]:
         form.append("W" if gf > ga else "L" if gf < ga else "D")
     return form
 
-# ---------- Lightweight, explainable Poisson model ----------
+# ---------- Regularized, recency-weighted Poisson model ----------
 def poisson_pmf(k: int, lam: float) -> float:
     return exp(-lam) * (lam ** k) / factorial(k)
 
 
 def prediction(home: str, away: str) -> dict:
-    # League scoring baseline and per-team attack/defence estimates are shrunk
-    # toward the cohort average to reduce overreaction to small samples.
-    if results.empty:
-        return {"home_xg": 1.25, "away_xg": 1.05, "home_win": 0.39, "draw": 0.29, "away_win": 0.32,
-                "home_scores": [], "away_scores": [], "games_home": 0, "games_away": 0}
-    all_goals = float(results["home_goals"].sum() + results["away_goals"].sum())
-    avg_per_team_game = max(0.25, all_goals / max(1, 2 * len(results)))
-    prior_games = 3.0
+    """Regularized small-sample model with recency weighting and Poisson outcomes."""
+    matches = results.copy()
+    if matches.empty:
+        home_xg, away_xg = 1.35, 1.10
+        matrix = np.array([[poisson_pmf(i, home_xg) * poisson_pmf(j, away_xg)
+                            for j in range(10)] for i in range(10)], dtype=float)
+        matrix /= matrix.sum()
+        return {"home_xg":home_xg,"away_xg":away_xg,"home_win":float(np.tril(matrix,-1).sum()),
+                "draw":float(np.trace(matrix)),"away_win":float(np.triu(matrix,1).sum()),
+                "games_home":0,"games_away":0,"confidence":"No results yet"}
 
-    def rates(team: str) -> tuple[float, float, int]:
-        played = team_matches(team)
-        n = len(played)
-        gf = ga = 0.0
-        for _, m in played.iterrows():
-            if m["home_team"] == team:
-                gf += float(m["home_goals"]); ga += float(m["away_goals"])
-            else:
-                gf += float(m["away_goals"]); ga += float(m["home_goals"])
-        attack = (gf + prior_games * avg_per_team_game) / (n + prior_games)
-        concede = (ga + prior_games * avg_per_team_game) / (n + prior_games)
-        return attack, concede, n
+    matches = matches[matches["home_team"].isin(team_names) & matches["away_team"].isin(team_names)].copy()
+    if matches.empty:
+        matches = results.copy()
+    latest = matches["date"].max()
+    age_days = (latest - matches["date"]).dt.days.clip(lower=0)
+    matches["recency_weight"] = np.power(0.5, age_days / 35.0)
+    matches["match_weight"] = matches["recency_weight"] * np.where(matches["conference"].eq("Cross-conference"), 0.85, 1.0)
+    league_rate = max(0.35, float(matches["home_goals"].sum() + matches["away_goals"].sum()) / max(1.0, 2.0 * len(matches)))
+    prior_games = 4.0
 
-    h_att, h_def, h_n = rates(home)
-    a_att, a_def, a_n = rates(away)
-    # Modest home advantage; cap rates for stability with youth-soccer small samples.
-    home_xg = float(np.clip(0.58 * h_att + 0.42 * a_def + 0.18, 0.2, 4.2))
-    away_xg = float(np.clip(0.58 * a_att + 0.42 * h_def, 0.2, 4.0))
-    max_goals = 8
-    matrix = np.array([[poisson_pmf(i, home_xg) * poisson_pmf(j, away_xg) for j in range(max_goals + 1)] for i in range(max_goals + 1)])
-    # Normalize after truncation to make outcome probabilities sum to 100%.
-    matrix = matrix / matrix.sum()
-    home_win = float(np.tril(matrix, -1).sum())  # row score > column score
-    draw = float(np.trace(matrix))
-    away_win = float(np.triu(matrix, 1).sum())
-    return {"home_xg": home_xg, "away_xg": away_xg, "home_win": home_win, "draw": draw, "away_win": away_win,
-            "home_scores": h_att, "away_scores": a_att, "games_home": h_n, "games_away": a_n}
+    def rates(team: str) -> tuple[float, float, int, float]:
+        played = matches[(matches["home_team"] == team) | (matches["away_team"] == team)].copy()
+        if played.empty:
+            return league_rate, league_rate, 0, 0.0
+        is_home = played["home_team"].eq(team)
+        gf = np.where(is_home, played["home_goals"], played["away_goals"]).astype(float)
+        ga = np.where(is_home, played["away_goals"], played["home_goals"]).astype(float)
+        w = played["match_weight"].to_numpy(dtype=float)
+        effective_n = float(w.sum())
+        attack = (float(np.dot(gf, w)) + prior_games * league_rate) / (effective_n + prior_games)
+        concede = (float(np.dot(ga, w)) + prior_games * league_rate) / (effective_n + prior_games)
+        return attack, concede, len(played), effective_n
+
+    h_att, h_concede, h_n, h_eff = rates(home)
+    a_att, a_concede, a_n, a_eff = rates(away)
+    home_xg = float(np.clip(0.52 * h_att + 0.48 * a_concede + 0.16, 0.20, 4.5))
+    away_xg = float(np.clip(0.52 * a_att + 0.48 * h_concede, 0.20, 4.3))
+    matrix = np.array([[poisson_pmf(i, home_xg) * poisson_pmf(j, away_xg)
+                        for j in range(10)] for i in range(10)], dtype=float)
+    matrix /= matrix.sum()
+    effective_sample = h_eff + a_eff
+    confidence = "Early estimate" if effective_sample < 8 else "Developing estimate" if effective_sample < 15 else "More data available"
+    return {"home_xg":home_xg,"away_xg":away_xg,"home_win":float(np.tril(matrix,-1).sum()),
+            "draw":float(np.trace(matrix)),"away_win":float(np.triu(matrix,1).sum()),
+            "games_home":h_n,"games_away":a_n,"confidence":confidence}
+
 
 # ---------- Matchup scouting report popup ----------
 def team_profile_stats(team: str) -> dict:
@@ -366,22 +384,20 @@ with schedule_tab:
         if shown_schedule.empty:
             st.info("No upcoming fixtures match those filters.")
         else:
-            shown_schedule["Date"] = shown_schedule["date"].dt.strftime("%a, %b %d")
-            shown_schedule["Kickoff"] = shown_schedule["kickoff"].replace("", "Time TBD")
-            shown_schedule["Venue"] = shown_schedule["venue"].replace("", "Venue TBD")
-            shown_schedule["Match"] = shown_schedule["home_team"] + " vs " + shown_schedule["away_team"]
-            st.dataframe(shown_schedule[["Date", "Kickoff", "Match", "Venue"]].rename(columns={"Match":"Matchup"}), use_container_width=True, hide_index=True)
-            st.markdown("#### Preview a fixture")
-            labels = shown_schedule.apply(lambda r: f"{r['date'].strftime('%b %d')} · {r['home_team']} vs {r['away_team']}", axis=1).tolist()
-            chosen = st.selectbox("Choose a match", labels, key="schedule_fixture")
-            fixture = shown_schedule.iloc[labels.index(chosen)]
-            forecast = prediction(fixture["home_team"], fixture["away_team"])
-            c1, c2, c3 = st.columns(3)
-            with c1: st.metric(fixture["home_team"], f"{forecast['home_xg']:.1f} xG")
-            with c2: st.metric("Projected score", f"{round(forecast['home_xg'])}–{round(forecast['away_xg'])}")
-            with c3: st.metric(fixture["away_team"], f"{forecast['away_xg']:.1f} xG")
-            if st.button("Open matchup analysis", use_container_width=True, key="schedule_matchup"):
-                show_matchup_report(fixture["home_team"], fixture["away_team"], forecast)
+            st.markdown("#### Upcoming games and projections")
+            st.caption("Projected scores are estimates. The listed home team receives a small home advantage; verify kickoff and venue with the league or clubs.")
+            for idx, (_, fixture) in enumerate(shown_schedule.iterrows()):
+                forecast = prediction(fixture["home_team"], fixture["away_team"])
+                date_label = fixture["date"].strftime("%a, %b %d")
+                kickoff = str(fixture["kickoff"]).strip() or "Time TBD"
+                venue = str(fixture["venue"]).strip() or "Venue TBD"
+                with st.container(border=True):
+                    st.markdown(f"**{date_label} · {kickoff}**")
+                    st.markdown(f"<div style='text-align:center;font-size:.95rem;font-weight:750;line-height:1.4'>{fixture['home_team']}<br><span style='color:#b8f36b;font-size:1.65rem'>{round(forecast['home_xg'])} – {round(forecast['away_xg'])}</span><br>{fixture['away_team']}</div>", unsafe_allow_html=True)
+                    st.caption(f"Expected goals: {forecast['home_xg']:.1f} – {forecast['away_xg']:.1f} · Home win {forecast['home_win']:.0%} · Draw {forecast['draw']:.0%} · Away win {forecast['away_win']:.0%}")
+                    st.caption(f"Venue: {venue} · {forecast['confidence']}")
+                    if st.button("Matchup analysis", use_container_width=True, key=f"schedule_matchup_{idx}"):
+                        show_matchup_report(fixture["home_team"], fixture["away_team"], forecast)
         st.caption("Schedule source: LeagueTables.soccer. Verify kickoff and venue with the league or clubs.")
 
 # ---------- Match Predictor ----------
@@ -397,10 +413,7 @@ with predict_tab:
         st.warning("Choose two different teams to create a matchup.")
     else:
         p = prediction(home, away)
-        total_games = p["games_home"] + p["games_away"]
-        if total_games < 4: confidence = "Very limited data"
-        elif total_games < 10: confidence = "Early estimate"
-        else: confidence = "More data available"
+        confidence = p["confidence"]
         st.markdown('<div class="section-title">Forecast</div>', unsafe_allow_html=True)
         c1, c2, c3 = st.columns([4, 3, 4])
         with c1:
@@ -416,7 +429,7 @@ with predict_tab:
             with col: st.metric(label, f"{val:.0%}")
         st.markdown(f'''<div class="prob-wrap"><div class="prob-home" style="width:{p['home_win']*100:.3f}%"></div><div class="prob-draw" style="width:{p['draw']*100:.3f}%"></div><div class="prob-away" style="width:{p['away_win']*100:.3f}%"></div></div>''', unsafe_allow_html=True)
         st.caption("Home win · Draw · Away win, left to right")
-        st.info(f"**How to read this:** The model blends each team's goals scored and conceded with the league-wide scoring average, shrinks small samples toward that average, and applies a modest home advantage. Current sample: {p['games_home']} matches for the home team and {p['games_away']} for the away team. **Data confidence: {confidence}.** Probabilities are model estimates, not betting odds or guarantees.")
+        st.info(f"**How to read this:** The model blends each team's goals scored and conceded with the league-wide scoring average, shrinks small samples toward that average, weights recent results more heavily, slightly discounts cross-conference matches, and applies a modest home advantage. Current sample: {p['games_home']} matches for the home team and {p['games_away']} for the away team. **Data confidence: {confidence}.** Probabilities are model estimates, not betting odds or guarantees.")
         if st.button("🔎  Matchup analysis · venue, strengths & keys to win", use_container_width=True, type="primary", key="open_matchup_report"):
             show_matchup_report(home, away, p)
         st.caption("Open the matchup report for venue context, team comparisons, what to expect, and practical keys to winning for each side.")
@@ -429,7 +442,7 @@ with predict_tab:
             st.markdown(f"**{away} · recent form**")
             form = team_form(away)
             st.write("  ".join(form) if form else "No completed matches yet")
-        st.caption("Form is shown oldest to newest among the latest five completed matches. The model currently uses all available completed results; it does not yet apply recency weighting or head-to-head weighting.")
+        st.caption("Form is shown oldest to newest among the latest five completed matches. The model now weights recent results more heavily. It does not separately weight head-to-head results because the sample is too small to estimate that reliably.")
 
 # ---------- Standings ----------
 with standings_tab:

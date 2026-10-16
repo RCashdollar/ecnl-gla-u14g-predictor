@@ -10,6 +10,7 @@ import streamlit as st
 APP_DIR = Path(__file__).resolve().parent
 RESULTS_PATH = APP_DIR / "results.csv"
 TEAMS_PATH = APP_DIR / "teams.csv"
+SCHEDULE_PATH = APP_DIR / "upcoming_schedule.csv"
 
 st.set_page_config(
     page_title="ECNL-RL U14 Girls | GLA Predictor",
@@ -98,8 +99,24 @@ def load_results() -> pd.DataFrame:
     df = df.drop_duplicates("fixture_key", keep="first").drop(columns="fixture_key")
     return df.sort_values("date", ascending=False).reset_index(drop=True)
 
+def load_schedule() -> pd.DataFrame:
+    cols = ["date", "conference", "home_team", "away_team", "kickoff", "venue", "source_url"]
+    if not SCHEDULE_PATH.exists():
+        return pd.DataFrame(columns=cols)
+    df = pd.read_csv(SCHEDULE_PATH).fillna("")
+    for c in cols:
+        if c not in df.columns: df[c] = ""
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["home_team"] = df["home_team"].astype(str).str.strip()
+    df["away_team"] = df["away_team"].astype(str).str.strip()
+    df = df[df["date"].notna() & df["home_team"].ne("") & df["away_team"].ne("")]
+    df = df[df["date"] >= pd.Timestamp.now().normalize()]
+    df["fixture_key"] = df.apply(lambda r: (r["date"], frozenset([r["home_team"], r["away_team"]])), axis=1)
+    return df.drop_duplicates("fixture_key").drop(columns="fixture_key").sort_values(["date", "kickoff"]).reset_index(drop=True)
+
 teams = load_teams()
 results = load_results()
+schedule = load_schedule()
 team_names = teams["team"].tolist()
 conf_map = dict(zip(teams["team"], teams["conference"]))
 
@@ -313,7 +330,7 @@ st.markdown("""
 <div class="hero">
   <div class="hero-kicker">2026–27 Season · Great Lakes Alliance</div>
   <h1>⚽ ECNL-RL U14 Girls Predictor</h1>
-  <p>Match forecasts, conference standings, and team performance — in one place.</p>
+  <p>Upcoming fixtures, simple match forecasts, and conference standings.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -322,16 +339,50 @@ latest_date = results["date"].max().strftime("%b %d, %Y") if completed and pd.no
 east_count = int((teams["conference"] == "GLA East").sum()) if not teams.empty else 0
 west_count = int((teams["conference"] == "GLA West").sum()) if not teams.empty else 0
 m1, m2, m3 = st.columns(3)
-with m1: st.metric("Teams tracked", len(team_names))
-with m2: st.metric("Completed matches", completed)
-with m3: st.metric("Latest result date", latest_date)
+with m1: st.metric("Teams", len(team_names))
+with m2: st.metric("Upcoming fixtures", len(schedule))
+with m3: st.metric("Completed matches", completed)
 st.caption(f"Coverage: {east_count} GLA East teams · {west_count} GLA West teams. Predictions are estimates based on the current results sample, not guarantees.")
 
 if not team_names:
     st.error("Couldn't load teams.csv. Make sure teams.csv is in the same GitHub folder as app.py.")
     st.stop()
 
-predict_tab, standings_tab, analytics_tab, results_tab = st.tabs(["⚽ Match Predictor", "🏆 Standings", "📈 Team Analytics", "🗓️ Results & Data"])
+schedule_tab, predict_tab, standings_tab, insights_tab = st.tabs(["🗓️ Schedule & Predictions", "⚽ Match Predictor", "🏆 Standings", "📈 Team Insights"])
+
+# ---------- Upcoming schedule ----------
+with schedule_tab:
+    st.markdown('<div class="section-title">Upcoming GLA fixtures</div>', unsafe_allow_html=True)
+    st.caption("Upcoming fixtures are separate from completed results and do not affect standings or model calculations.")
+    if schedule.empty:
+        st.info("No upcoming fixtures are loaded. Add confirmed fixtures to upcoming_schedule.csv in the app repository.")
+    else:
+        f1, f2 = st.columns(2)
+        with f1: schedule_team = st.selectbox("Team", ["All teams"] + team_names, key="schedule_team")
+        with f2: schedule_conf = st.selectbox("Conference", ["All conferences", "GLA East", "GLA West", "Cross-conference"], key="schedule_conf")
+        shown_schedule = schedule.copy()
+        if schedule_team != "All teams": shown_schedule = shown_schedule[(shown_schedule["home_team"] == schedule_team) | (shown_schedule["away_team"] == schedule_team)]
+        if schedule_conf != "All conferences": shown_schedule = shown_schedule[shown_schedule["conference"] == schedule_conf]
+        if shown_schedule.empty:
+            st.info("No upcoming fixtures match those filters.")
+        else:
+            shown_schedule["Date"] = shown_schedule["date"].dt.strftime("%a, %b %d")
+            shown_schedule["Kickoff"] = shown_schedule["kickoff"].replace("", "Time TBD")
+            shown_schedule["Venue"] = shown_schedule["venue"].replace("", "Venue TBD")
+            shown_schedule["Match"] = shown_schedule["home_team"] + " vs " + shown_schedule["away_team"]
+            st.dataframe(shown_schedule[["Date", "Kickoff", "Match", "Venue"]].rename(columns={"Match":"Matchup"}), use_container_width=True, hide_index=True)
+            st.markdown("#### Preview a fixture")
+            labels = shown_schedule.apply(lambda r: f"{r['date'].strftime('%b %d')} · {r['home_team']} vs {r['away_team']}", axis=1).tolist()
+            chosen = st.selectbox("Choose a match", labels, key="schedule_fixture")
+            fixture = shown_schedule.iloc[labels.index(chosen)]
+            forecast = prediction(fixture["home_team"], fixture["away_team"])
+            c1, c2, c3 = st.columns(3)
+            with c1: st.metric(fixture["home_team"], f"{forecast['home_xg']:.1f} xG")
+            with c2: st.metric("Projected score", f"{round(forecast['home_xg'])}–{round(forecast['away_xg'])}")
+            with c3: st.metric(fixture["away_team"], f"{forecast['away_xg']:.1f} xG")
+            if st.button("Open matchup analysis", use_container_width=True, key="schedule_matchup"):
+                show_matchup_report(fixture["home_team"], fixture["away_team"], forecast)
+        st.caption("Schedule source: LeagueTables.soccer. Verify kickoff and venue with the league or clubs.")
 
 # ---------- Match Predictor ----------
 with predict_tab:
@@ -394,8 +445,8 @@ with standings_tab:
     st.dataframe(display, use_container_width=True, hide_index=True, column_config={"Rank":st.column_config.NumberColumn("#", width="small"), "Team":st.column_config.TextColumn("Team", width="large"), "Pts":st.column_config.NumberColumn("Pts", help="3 points for a win, 1 for a draw")})
     st.caption("Conference tables include only matches between teams assigned to the same GLA conference. Cross-conference games count in overall standings only.")
 
-# ---------- Team analytics ----------
-with analytics_tab:
+# ---------- Team insights ----------
+with insights_tab:
     st.markdown('<div class="section-title">Team profile</div>', unsafe_allow_html=True)
     selected = st.selectbox("Choose a team", team_names, key="analytics_team")
     games = team_matches(selected)
@@ -430,34 +481,22 @@ with analytics_tab:
     else:
         st.info("No completed matches for this team are in the current results ledger.")
 
-# ---------- Results & data ----------
-with results_tab:
-    st.markdown('<div class="section-title">Completed results</div>', unsafe_allow_html=True)
-    f1, f2 = st.columns(2)
-    with f1: team_filter = st.selectbox("Filter by team", ["All teams"] + team_names, key="results_team_filter")
-    with f2: conf_filter = st.selectbox("Filter by match type", ["All", "GLA East", "GLA West", "Cross-conference"], key="results_conf_filter")
-    shown = results.copy()
-    if team_filter != "All teams": shown = shown[(shown["home_team"] == team_filter) | (shown["away_team"] == team_filter)]
-    if conf_filter != "All": shown = shown[shown["conference"] == conf_filter]
-    if not shown.empty:
-        shown["Date"] = shown["date"].dt.strftime("%b %d, %Y")
-        shown["Score"] = shown.apply(lambda r: f"{int(r['home_goals'])}–{int(r['away_goals'])}", axis=1)
-        shown["Match"] = shown["home_team"] + "  vs  " + shown["away_team"]
-        st.dataframe(shown[["Date", "conference", "Match", "Score"]].rename(columns={"conference":"Match type"}), use_container_width=True, hide_index=True)
-    else:
-        st.info("No completed results match those filters.")
-    st.markdown("#### Data notes")
-    st.write(f"- **{len(results)} unique completed fixtures** loaded from `results.csv`.")
-    st.write(f"- Conference standings use only games where both teams belong to the same conference.")
-    st.write(f"- Overall standings include cross-conference matches.")
-    st.write(f"- Results are loaded from the repository at app startup; upcoming fixtures are not treated as completed unless scores and a final status are present.")
-    if not results.empty and "validation_note" in results.columns:
-        with st.expander("Show result validation notes"):
-            notes = results.copy()
-            notes["Date"] = notes["date"].dt.strftime("%b %d, %Y")
-            notes["Match"] = notes["home_team"] + " vs " + notes["away_team"]
-            notes["Score"] = notes.apply(lambda r: f"{int(r['home_goals'])}–{int(r['away_goals'])}", axis=1)
-            st.dataframe(notes[["Date", "Match", "Score", "validation_note"]], use_container_width=True, hide_index=True)
+    with st.expander("Completed results and data notes"):
+        f1, f2 = st.columns(2)
+        with f1: team_filter = st.selectbox("Filter by team", ["All teams"] + team_names, key="results_team_filter")
+        with f2: conf_filter = st.selectbox("Filter by match type", ["All", "GLA East", "GLA West", "Cross-conference"], key="results_conf_filter")
+        shown = results.copy()
+        if team_filter != "All teams": shown = shown[(shown["home_team"] == team_filter) | (shown["away_team"] == team_filter)]
+        if conf_filter != "All": shown = shown[shown["conference"] == conf_filter]
+        if not shown.empty:
+            shown["Date"] = shown["date"].dt.strftime("%b %d, %Y")
+            shown["Score"] = shown.apply(lambda r: f"{int(r['home_goals'])}–{int(r['away_goals'])}", axis=1)
+            shown["Match"] = shown["home_team"] + " vs " + shown["away_team"]
+            st.dataframe(shown[["Date", "conference", "Match", "Score"]].rename(columns={"conference":"Match type"}), use_container_width=True, hide_index=True)
+        else: st.info("No completed results match those filters.")
+        st.write(f"- **{len(results)} unique completed fixtures** loaded from results.csv.")
+        st.write("- Conference standings include same-conference games; overall standings include cross-conference matches.")
+        st.write("- Upcoming fixtures are stored separately and never count as completed results.")
 
 st.markdown("---")
 st.caption("ECNL-RL U14 Girls · Great Lakes Alliance · 2026–27 | Forecasts are estimates and become more reliable as verified match data grows.")
